@@ -628,6 +628,6 @@ translation = {
     "enablePlugins": "യുബിഎ പ്ലഗിനുകൾ സജ്ജമാക്കുക",
     "refButtonAction": "റഫറൻസ് ബട്ടൺ നടപടി",
     "direct": "നേരിട്ടുള്ള",
-    "cli": "കമാന്ഡ് ലൈന് ഇന്റര്ഫേസ്",
-    "ubaCommands": "UBA ആജ്ഞകള്",
+    "cli": "കമാൻഡ് ലൈൻ ഇന്റർഫേസ്",
+    "ubaCommands": "യുബിഎ ആജ്ഞകൾ",
 }
