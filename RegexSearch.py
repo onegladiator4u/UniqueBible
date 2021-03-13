@@ -1,6 +1,12 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import re, glob, os, sys, pprint
+#import platform
+#if (platform.system() != "Windows"):
+# sys.platform
+# https://docs.python.org/3/library/sys.html#sys.platform
+if (sys.platform == "linux") or (sys.platform == "darwin"):
+    import readline
 from ast import literal_eval
 
 class RegexSearch:
@@ -139,7 +145,11 @@ if __name__ == '__main__':
         checkMultiple = input("Work on more than one file or folder? [yes/No] ").lower()
         multiple = (checkMultiple == "yes" or checkMultiple == "y")
         if multiple:
-            inputNames = literal_eval(input("Enter a list of files or folders: "))
+            print("Enter the names of your files / folders, separated by comma ',', for examples:")
+            print("filename1.txt, filename2.txt, folderName1, folderName2")
+            inputNames = input("Enter here: ")
+            inputNames = [inputName.strip() for inputName in inputNames.split(",")]
+            print("Total of {0} item(s) entered: {1}".format(len(inputNames), inputNames))
         else:
             inputName = input("Enter a file or folder: ")
         # Ask if overwriting original file(s)

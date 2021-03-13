@@ -39,6 +39,8 @@ import os
 # File "config.py" is essential for running module "config"
 # Create file "config.py" if it is missing.
 # The following two lines are written for use of this parser outside UniqueBible.app
+import pprint
+
 if not os.path.isfile("config.py"):
     open("config.py", "w", encoding="utf-8").close()
 
@@ -62,6 +64,19 @@ class BibleVerseParser:
         self.updateStandardAbbreviation()
         # set preference of standardisation
         self.standardisation = standardisation
+        self.bibleBooksDict = {}
+        for bible in BibleBooks.name2number.keys():
+            num = BibleBooks.name2number[bible]
+            self.bibleBooksDict[bible] = int(num)
+            if config.useFastVerseParsing:
+                if "." in bible:
+                    bible = bible.replace(".", "")
+                    self.bibleBooksDict[bible] = int(num)
+                if bible[0] < 'a':
+                    bible = bible.lower()
+                    self.bibleBooksDict[bible] = int(num)
+        sortedNames = sorted(self.bibleBooksDict.keys())
+        self.sortedNames = sorted(sortedNames, key=len, reverse=True)
 
     # function for converting b c v integers to verse reference string
     def bcvToVerseReference(self, b, c, v, *args, isChapter=False):
@@ -73,7 +88,7 @@ class BibleVerseParser:
             if args and len(args) == 2:
                 c2, v2 = args
                 if c2 == c and v2 > v:
-                    return "{0} {1}:{2}-{3}".format(abbreviation, c, v, v2)
+                    return "{0} {1}:{2}".format(abbreviation, c, v) if v == v2 else "{0} {1}:{2}-{3}".format(abbreviation, c, v, v2)
                 elif c2 > c:
                     return "{0} {1}:{2}-{3}:{4}".format(abbreviation, c, v, c2, v2)
             else:
@@ -90,6 +105,7 @@ class BibleVerseParser:
         }
         self.checkConfig()
         self.standardAbbreviation = standardAbbreviations[config.standardAbbreviation]
+        self.standardFullBookName = {key: value[1] for key, value in self.standardAbbreviation.items()}
         self.standardAbbreviation = {key: value[0] for key, value in self.standardAbbreviation.items()}
 
     # The following two lines are written for use of this parser outside UniqueBible.app
@@ -125,11 +141,7 @@ class BibleVerseParser:
         )
         text = RegexSearch.deepReplace(text, searchPattern, searchReplace)
 
-        # search for books; mark them with book numbers, used by https://marvel.bible
-        # sorting books by alphabet, then by length
-        sortedNames = sorted(BibleBooks.name2number.keys())
-        sortedNames = sorted(sortedNames, key=len, reverse=True)
-        for name in sortedNames:
+        for name in self.sortedNames:
             # get the string of book name
             bookName = name
             searchReplace = (
@@ -140,7 +152,7 @@ class BibleVerseParser:
             )
             bookName = RegexSearch.replace(bookName, searchReplace)
             # get assigned book number from dictionary
-            bookNumber = BibleBooks.name2number[name]
+            bookNumber = str(self.bibleBooksDict[name])
             # search & replace for marking book
             searchReplace = (
                 ('('+bookName+') ([0-9])', '『'+bookNumber+r'｜\1』 \2'),
@@ -204,6 +216,15 @@ class BibleVerseParser:
         # return a list of tuples (b, c, v)
         return [literal_eval(m) for m in re.findall('bcv(\([0-9]+?,[ ]*[0-9]+?,[ ]*[0-9, ]*?\))', text)]
 
+    def extractAllReferencesFast(self, text, tagged=False):
+        if tagged:
+            return "This is not supported"
+        sep = ";"
+        if "," in text:
+            sep = ","
+        ret = [self.verseReferenceToBCV(verse) for verse in text.split(sep)]
+        return ret
+
     def parseFile(self, inputFile):
         # set output filename here
         path, file = os.path.split(inputFile)
@@ -239,7 +260,7 @@ class BibleVerseParser:
             if os.path.isfile(file):
                 self.parseFile(file)
 
-    def startParsing(self, inputName):
+    def extractAllReferencesstartParsing(self, inputName):
         # check if input is a file or a folder
         if os.path.isfile(inputName):
             # parse file
@@ -250,6 +271,28 @@ class BibleVerseParser:
         else:
             # input name is neither a file or a folder
             print("'{0}' is not found.".format(inputName))
+
+    def verseReferenceToBCV(self, text):
+        text = text.strip()
+        bible = 0
+        for key in self.sortedNames:
+            if text.startswith(key):
+                bible = self.bibleBooksDict[key]
+                break
+        reference = text[len(key):]
+        res = re.search('(\s*)(\d*):*(\d*) *-* *(\d*):*(\d*)', reference).groups()
+        if res[1] == '':
+            return (bible, 1, 1)
+        elif res[2] == '' and res[3] == '':
+            return bible, int(res[1]), 1
+        elif res[2] == '' and not res[3] == '':
+            return bible, int(res[1]), 1, int(res[3]), 1
+        elif res[3] == '' and res[4] == '':
+            return bible, int(res[1]), int(res[2])
+        elif res[4] == '':
+            return bible, int(res[1]), int(res[2]), int(res[1]), int(res[3])
+        else:
+            return bible, int(res[1]), int(res[2]), int(res[3]), int(res[4])
 
 """
 END - class BibleVerseParser
@@ -276,3 +319,7 @@ if __name__ == '__main__':
 
     # delete object
     del parser
+
+    # parser = BibleVerseParser("NO")
+    # text = "John 1:1"
+    # print(parser.parseText(text))

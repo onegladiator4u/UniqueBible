@@ -1,13 +1,17 @@
 import config
-from ast import literal_eval
-from PySide2.QtCore import Qt
-from PySide2.QtWidgets import (QGridLayout, QWidget)
-from PySide2.QtWidgets import QSplitter
-from translations import translations
+from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QGridLayout, QWidget, QSplitter
 from gui.TabWidget import TabWidget
 from gui.WebEngineView import WebEngineView
 
 class CentralWidget(QWidget):
+
+    instantRatio = {
+        0: (2, 0),
+        1: (10, 1),
+        2: (5, 2),
+        3: (2, 2),
+    }
 
     def __init__(self, parent):
         super().__init__()
@@ -32,15 +36,19 @@ class CentralWidget(QWidget):
         for i in range(config.numberOfTab):
             tabView = WebEngineView(self, "main")
             self.mainView.addTab(tabView, "{1}{0}".format(i+1, config.thisTranslation["tabBible"]))
+            tabView.titleChanged.connect(self.parent.mainTextCommandChanged)
+            tabView.loadFinished.connect(self.parent.finishMainViewLoading)
 
         self.studyView = TabWidget(self, "study")
         self.parent.studyView = self.studyView
         for i in range(config.numberOfTab):
             tabView = WebEngineView(self, "study")
             self.studyView.addTab(tabView, "{1}{0}".format(i+1, config.thisTranslation["tabStudy"]))
+            tabView.titleChanged.connect(self.parent.studyTextCommandChanged)
+            tabView.loadFinished.connect(self.parent.finishStudyViewLoading)
 
         self.instantView = WebEngineView(self, "instant")
-        self.instantView.setHtml("<link rel='stylesheet' type='text/css' href='css/{1}.css'><p style='font-family:{0};'><u><b>Bottom Window</b></u><br>Display instant information on this window by hovering over verse numbers, tagged words or bible reference links.</p>".format(config.font, config.theme), config.baseUrl)
+        self.instantView.setHtml("<link id='theme_stylesheet' rel='stylesheet' type='text/css' href='css/{1}.css'><link id='theme_stylesheet' rel='stylesheet' type='text/css' href='css/custom.css'><p style='font-family:{0};'><u><b>Bottom Window</b></u><br>Display instant information on this window by hovering over verse numbers, tagged words or bible reference links.</p>".format(config.font, config.theme), config.baseUrl)
 
         self.parallelSplitter.addWidget(self.mainView)
         self.parallelSplitter.addWidget(self.studyView)
@@ -91,6 +99,7 @@ class CentralWidget(QWidget):
             1: (2, 1),
             2: (1, 1),
             3: (1, 2),
+            4: (0, 1),
         }
 
         # The total space we have.
@@ -109,18 +118,11 @@ class CentralWidget(QWidget):
         else:
             self.studyView.hide()
 
-        # Then resize instantView
-        instantRatio = {
-            0: (2, 0),
-            1: (5, 2),
-            2: (2, 2),
-        }
-
-        if config.instantMode == -1:        
+        if config.instantMode == -1:
             top, bottom = config.iModeSplitterSizes
             h = top + bottom
         else:
-            top, bottom = instantRatio[config.instantMode]
+            top, bottom = CentralWidget.instantRatio[config.instantMode]
 
         self.instantSplitter.setSizes([ h * top // (top + bottom), h * bottom // (top + bottom)])
         

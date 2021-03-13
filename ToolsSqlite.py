@@ -1,6 +1,7 @@
 import os, sqlite3, re, config
 from BiblesSqlite import BiblesSqlite
 from BibleVerseParser import BibleVerseParser
+from util.TextUtil import TextUtil
 
 class VerseData:
 
@@ -320,14 +321,14 @@ class DictionaryData:
             contentText = content[0]
 
             # deal with images
-            imageList = [m for m in re.findall('src="getImage\.php\?resource=([^"]*?)&id=([^"]*?)"', contentText)]
+            imageList = [m for m in re.findall(r'src="getImage\.php\?resource=([^"]*?)&id=([^"]*?)"', contentText)]
             if imageList:
                 imageSqlite = ImageSqlite()
                 for (imgModule, imgEntry) in imageList:
                     imageSqlite.exportImage(imgModule, imgEntry)
                 del imageSqlite
-            contentText = re.sub('src="getImage\.php\?resource=([^"]*?)&id=([^"]*?)"', r'src="images/\1/\1_\2"', contentText)
-            contentText = re.sub("src='getImage\.php\?resource=([^']*?)&id=([^']*?)'", r"src='images/\1/\1_\2'", contentText)
+            contentText = re.sub(r'src="getImage\.php\?resource=([^"]*?)&id=([^"]*?)"', r'src="images/\1/\1_\2"', contentText)
+            contentText = re.sub(r"src='getImage\.php\?resource=([^']*?)&id=([^']*?)'", r"src='images/\1/\1_\2'", contentText)
 
             abb = entry[:3]
             moduleName = dict(IndexesSqlite().dictionaryList)[abb]
@@ -356,14 +357,14 @@ class EncyclopediaData:
             contentText = content[0]
 
             # deal with images
-            imageList = [m for m in re.findall('src="getImage\.php\?resource=([^"]*?)&id=([^"]*?)"', contentText)]
+            imageList = [m for m in re.findall(r'src="getImage\.php\?resource=([^"]*?)&id=([^"]*?)"', contentText)]
             if imageList:
                 imageSqlite = ImageSqlite()
                 for (imgModule, imgEntry) in imageList:
                     imageSqlite.exportImage(imgModule, imgEntry)
                 del imageSqlite
-            contentText = re.sub('src="getImage\.php\?resource=([^"]*?)&id=([^"]*?)"', r'src="images/\1/\1_\2"', contentText)
-            contentText = re.sub("src='getImage\.php\?resource=([^']*?)&id=([^']*?)'", r"src='images/\1/\1_\2'", contentText)
+            contentText = re.sub(r'src="getImage\.php\?resource=([^"]*?)&id=([^"]*?)"', r'src="images/\1/\1_\2"', contentText)
+            contentText = re.sub(r"src='getImage\.php\?resource=([^']*?)&id=([^']*?)'", r"src='images/\1/\1_\2'", contentText)
 
             moduleName = dict(IndexesSqlite().encyclopediaList)[module]
             searchButton = "&ensp;<button class='feature' onclick='document.title=\"_command:::SEARCHTOOL:::{0}:::\"'>search</button>".format(module)
@@ -425,7 +426,7 @@ class ExlbData:
                 content = content[0]
                 if not config.myGoogleApiKey or not config.internet or config.alwaysDisplayStaticMaps:
                     # display static google map if users do not have a google api key or internet connection
-                    content = re.sub('<blid="(.*?)">.*?MYGOOGLEAPIKEY\]&callback=myMap"></script>', r'<p align="center"><img src="images/exlbl_large/\1.png"></p>', content)
+                    content = re.sub(r'<blid="(.*?)">.*?MYGOOGLEAPIKEY\]&callback=myMap"></script>', r'<p align="center"><img src="images/exlbl_large/\1.png"></p>', content)
                     # adjust zoom level with the following line
                     #content = content.replace("&z=10'", "&z=8'")
                 else:
@@ -442,6 +443,39 @@ class ExlbData:
 
 
 class Commentary:
+
+    marvelCommentaries = {
+        "Barnes": "Notes on the Old and New Testaments (Barnes) [26 vol.]",
+        "Benson": "Commentary on the Old and New Testaments (Benson) [5 vol.]",
+        "BI": "Biblical Illustrator (Exell) [58 vol.]",
+        "Brooks": "Complete Summary of the Bible (Brooks) [2 vol.]",
+        "Calvin": "John Calvin's Commentaries (Calvin) [22 vol.]",
+        "Clarke": "Commentary on the Bible (Clarke) [6 vol.]",
+        "CBSC": "Cambridge Bible for Schools and Colleges (Cambridge) [57 vol.]",
+        "CECNT": "Critical And Exegetical Commentary on the NT (Meyer) [20 vol.]",
+        "CGrk": "Cambridge Greek Testament for Schools and Colleges (Cambridge) [21 vol.]",
+        "CHP": "Church Pulpit Commentary (Nisbet) [12 vol.]",
+        "CPBST": "College Press Bible Study Textbook Series (College) [59 vol.]",
+        "EBC": "Expositor's Bible Commentary (Nicoll) [49 vol.]",
+        "ECER": "Commentary for English Readers (Ellicott) [8 vol.]",
+        "EGNT": "Expositor's Greek New Testament (Nicoll) [5 vol.]",
+        "GCT": "Greek Testament Commentary (Alford) [4 vol.]",
+        "Gill": "Exposition of the Entire Bible (Gill) [9 vol.]",
+        "Henry": "Exposition of the Old and New Testaments (Henry) [6 vol.]",
+        "HH": "Horæ Homileticæ (Simeon) [21 vol.]",
+        "ICCNT": "International Critical Commentary, NT (1896-1929) [16 vol.]",
+        "JFB": "Jamieson, Fausset, and Brown Commentary (JFB) [6 vol.]",
+        "KD": "Commentary on the Old Testament (Keil & Delitzsch) [10 vol.]",
+        "Lange": "Commentary on the Holy Scriptures: Critical, Doctrinal, and Homiletical (Lange) [25 vol.]",
+        "MacL": "Expositions of Holy Scripture (MacLaren) [32 vol.]",
+        "PHC": "Preacher's Complete Homiletical Commentary (Exell) [37 vol.]",
+        "Pulpit": "Pulpit Commentary (Spence) [23 vol.]",
+        "Rob": "Word Pictures in the New Testament (Robertson) [6 vol.]",
+        "Spur": "Spurgeon's Expositions on the Bible (Spurgeon) [3 vol.]",
+        "Vincent": "Word Studies in the New Testament (Vincent) [4 vol.]",
+        "Wesley": "John Wesley's Notes on the Whole Bible (Wesley) [3 vol.]",
+        "Whedon": "Commentary on the Old and New Testaments (Whedon) [14 vol.]",
+    }
 
     def __init__(self, text=False):
         if text:
@@ -485,7 +519,7 @@ class Commentary:
 
     def getCommentaryList(self):
         commentaryFolder = os.path.join(config.marvelData, "commentaries")
-        commentaryList = [f[1:-11] for f in os.listdir(commentaryFolder) if os.path.isfile(os.path.join(commentaryFolder, f)) and f.endswith(".commentary") and not re.search("^[\._]", f)]
+        commentaryList = [f[1:-11] for f in os.listdir(commentaryFolder) if os.path.isfile(os.path.join(commentaryFolder, f)) and f.endswith(".commentary") and not re.search(r"^[\._]", f)]
         return sorted(commentaryList)
 
     def getCommentaries(self):
@@ -559,7 +593,10 @@ class Commentary:
             self.cursor.execute(query, verse[0:2])
             scripture = self.cursor.fetchone()
             if scripture:
-                chapter += re.sub('onclick="luV\(([0-9]+?)\)"', r'onclick="luV(\1)" onmouseover="qV(\1)" ondblclick="mV(\1)"', scripture[0])
+                data = scripture[0]
+                if config.theme == "dark":
+                    data = data.replace('color:#000080;', 'color:gray;')
+                chapter += re.sub(r'onclick="luV\(([0-9]+?)\)"', r'onclick="luV(\1)" onmouseover="qV(\1)" ondblclick="mV(\1)"', data)
                 return "<div>{0}</div>".format(chapter)
             else:
                 return "<span style='color:gray;'>['{0}' does not contain this chapter.]</span>".format(self.text)
@@ -574,7 +611,7 @@ class LexiconData:
 
     def getLexiconList(self):
         lexiconFolder = os.path.join(config.marvelData, "lexicons")
-        lexiconList = [f[:-8] for f in os.listdir(lexiconFolder) if os.path.isfile(os.path.join(lexiconFolder, f)) and f.endswith(".lexicon") and not re.search("^[\._]", f)]
+        lexiconList = [f[:-8] for f in os.listdir(lexiconFolder) if os.path.isfile(os.path.join(lexiconFolder, f)) and f.endswith(".lexicon") and not re.search(r"^[\._]", f)]
         return sorted(lexiconList)
 
     def getSelectForm(self, entry, module=""):
@@ -600,12 +637,15 @@ class Lexicon:
         self.connection.close()
 
     def getInfo(self):
-        query = "SELECT Definition FROM Lexicon WHERE Topic = 'info'"
-        self.cursor.execute(query)
-        info = self.cursor.fetchone()
-        if info:
-            return info[0]
-        else:
+        try:
+            query = "SELECT Definition FROM Lexicon WHERE Topic = 'info'"
+            self.cursor.execute(query)
+            info = self.cursor.fetchone()
+            if info:
+                return info[0]
+            else:
+                return self.module
+        except:
             return self.module
 
     def getContent(self, entry):
@@ -622,14 +662,14 @@ class Lexicon:
         else:
             contentText += information[0]
             # deal with images
-            imageList = [m for m in re.findall('src="getImage\.php\?resource=([^"]*?)&id=([^"]*?)"', contentText)]
+            imageList = [m for m in re.findall(r'src="getImage\.php\?resource=([^"]*?)&id=([^"]*?)"', contentText)]
             if imageList:
                 imageSqlite = ImageSqlite()
                 for (imgModule, imgEntry) in imageList:
                     imageSqlite.exportImage(imgModule, imgEntry)
                 del imageSqlite
-            contentText = re.sub('src="getImage\.php\?resource=([^"]*?)&id=([^"]*?)"', r'src="images/\1/\1_\2"', contentText)
-            contentText = re.sub("src='getImage\.php\?resource=([^']*?)&id=([^']*?)'", r"src='images/\1/\1_\2'", contentText)
+            contentText = re.sub(r'src="getImage\.php\?resource=([^"]*?)&id=([^"]*?)"', r'src="images/\1/\1_\2"', contentText)
+            contentText = re.sub(r"src='getImage\.php\?resource=([^']*?)&id=([^']*?)'", r"src='images/\1/\1_\2'", contentText)
             return contentText
 
 
@@ -640,7 +680,7 @@ class BookData:
 
     def getBookList(self):
         bookFolder = os.path.join(config.marvelData, "books")
-        bookList = [f[:-5] for f in os.listdir(bookFolder) if os.path.isfile(os.path.join(bookFolder, f)) and f.endswith(".book") and not re.search("^[\._]", f)]
+        bookList = [f[:-5] for f in os.listdir(bookFolder) if os.path.isfile(os.path.join(bookFolder, f)) and f.endswith(".book") and not re.search(r"^[\._]", f)]
         bookList = sorted(bookList)
         return [(book, book) for book in bookList]
 
@@ -650,7 +690,7 @@ class BookData:
         if module in dict(self.bookList).keys():
             books = self.formatSelectList("listBookTopic(this.value)", self.bookList, module)
             topicList = Book(module).getTopicList()
-            topics = "<br>".join(["<ref onclick='document.title=\"BOOK:::{0}:::{1}\"'>{1}</ref>".format(module, topic) for topic in topicList])
+            topics = "<br>".join(["<ref onclick='document.title=\"BOOK:::{0}:::{1}\"'>{2}</ref>".format(module, re.sub("'", "@", topic), topic) for topic in topicList])
             config.book = module
             return "<p>{0} &ensp;<button class='feature' onclick='document.title=\"_command:::SEARCHBOOK:::{1}:::\"'>search</button></p><p>{2}</p>".format(books, module, topics)
         else:
@@ -660,7 +700,7 @@ class BookData:
         if module in dict(self.bookList).keys():
             books = self.formatSelectList("listBookTopic(this.value)", self.bookList, module)
             topicList = Book(module).getSearchedTopicList(searchString, chapterOnly=chapterOnly)
-            topics = "<br>".join(["<ref onclick='document.title=\"BOOK:::{0}:::{1}\"'>{1}</ref>".format(module, topic) for topic in topicList])
+            topics = "<br>".join(["<ref onclick='document.title=\"BOOK:::{0}:::{1}\"'>{2}</ref>".format(module, re.sub("'", "@", topic), topic) for topic in topicList])
             config.book = module
             if topics:
                 if chapterOnly:
@@ -684,7 +724,11 @@ class BookData:
         return selectForm
 
     def getContent(self, module, entry):
-        return Book(module).getContent(entry)
+        entry = re.sub("@", "'", entry)
+        if entry.isdecimal():
+            return Book(module).getContentByRowId(entry)
+        else:
+            return Book(module).getContentByChapter(entry)
 
 
 class Book:
@@ -715,30 +759,56 @@ class Book:
             self.cursor.execute(query, (searchString, searchString))
         return [topic[0] for topic in self.cursor.fetchall()]
 
-    def getContent(self, entry):
-        query = "SELECT Content FROM Reference WHERE Chapter=?"
+    def getChapterCount(self):
+        query = "SELECT MAX(ROWID) from Reference"
+        result = self.cursor.execute(query).fetchone()
+        return result[0]
+
+    def getContentByChapter(self, entry):
+        query = "SELECT Chapter, Content, ROWID FROM Reference WHERE Chapter=?"
+        return self.getContentData(query, entry)
+
+    def getContentByRowId(self, entry):
+        query = "SELECT Chapter, Content, ROWID FROM Reference WHERE ROWID=?"
+        return self.getContentData(query, entry)
+
+    def getContentData(self, query, entry):
         self.cursor.execute(query, (entry,))
-        content = self.cursor.fetchone()
-        if not content:
+        row = self.cursor.fetchone()
+        if not row:
             return "[not applicable]"
         else:
             config.book = self.module
-            content = content[0]
+            config.bookChapter = row[0]
+            content = row[1]
+            config.bookChapNum = row[2]
             if config.overwriteBookFont:
-                content = re.sub("font-family:[^<>]*?([;'{0}])".format('"'), r"font-family:{0}\1".format(config.font), content)
+                fontFamily = config.font
+                if config.overwriteBookFontFamily:
+                    fontFamily = config.overwriteBookFontFamily
+                content = re.sub("font-family:[^<>]*?;", r"font-family:'{0}';".format(fontFamily), content)
             if config.overwriteBookFontSize:
-                content = re.sub("font-size:[^<>]*?;", "", content)
+                if type(config.overwriteBookFontSize) == bool:
+                    content = re.sub("font-size:[^<>]*?;", "", content)
+                elif type(config.overwriteBookFontSize) == int:
+                    content = re.sub("font-size:[^<>]*?;", r"font-size:'{0}px';".format(config.overwriteBookFontSize),
+                                     content)
+                elif type(config.overwriteBookFontSize) == str:
+                    content = re.sub("font-size:[^<>]*?;", r"font-size:'{0}';".format(config.overwriteBookFontSize),
+                                     content)
             for searchString in config.bookSearchString.split("%"):
                 if searchString and not searchString == "z":
                     content = re.sub("({0})".format(searchString), r"<z>\1</z>", content, flags=re.IGNORECASE)
-                    p = re.compile("(<[^<>]*?)<z>(.*?)</z>", flags=re.M)
-                    s = p.search(content)
-                    while s:
-                        content = re.sub(p, r"\1\2", content)
-                        s = p.search(content)
+                    content = TextUtil.fixTextHighlighting(content)
             # add an id so as to scroll to the first result
             content = re.sub("<z>", "<z id='v{0}.{1}.{2}'>".format(config.studyB, config.studyC, config.studyV), content, count=1)
+            if config.theme == "dark":
+                content = self.adjustDarkThemeColorsForBook(content)
             # return content
-            return "<p><ref onclick='document.title={3}BOOK:::{0}{3}'>{0}</ref><br>&gt; <b>{1}</b></p>{2}".format(self.module, entry, content, '"')
+            return "<p><ref onclick='document.title={3}BOOK:::{0}{3}'>{0}</ref><br>&gt; <b>{1}</b></p>{2}".format(self.module, config.bookChapter, content, '"')
 
-
+    def adjustDarkThemeColorsForBook(self, content):
+        content = content.replace('<body style="background-attachment: fixed" background="http://www.swartzentrover.com/cotor/Bootstrap/img/bg/sdf/BK249.GIF">', '<body>')
+        content = content.replace('<body style="background-attachment: fixed" background="http://www.swartzentrover.com/Web Graphics/BackGrounds/concrete/concrete12.jpg">', '<body>')
+        content = content.replace('cellpadding="0"', 'cellpadding="5"')
+        return content

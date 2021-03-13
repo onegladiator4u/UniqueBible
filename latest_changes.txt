@@ -1,3 +1,926 @@
+Major change in version 22.67:
+* Added a startup plugin on command keyword alias.
+
+Major change in version 22.66:
+* Added a container of functions to be run after history records are loaded: config.actionsRightAfterLoadingHistoryRecords = []
+    Read https://github.com/eliranwong/UniqueBible/wiki/UBA-Startup-Plugins
+
+Major change in version 22.65:
+* Fixed an issue that new command was ignored.
+* Fixe use of config flag "useWebbrowser"
+
+Major change in version 22.64:
+* Added in-app reference on UBA commands:
+    A window showing UBA commands is accessible through menu under "Information" or "About" section.
+    On cli, users can enter ".help" to view documentation on UBA commands.
+
+Major change in version 22.63:
+* Fixed an issue that telnet-server was not able to be stopped with Ctrl+C.
+
+Major change in version 22.62:
+* Improved verse reference display.
+
+Major change in version 22.61:
+* Enhanced remote cli feature used with telnet-server.
+
+Major change in version 22.60:
+* Fixed missing enableParagraphButton in start menu layout.
+
+Major change in version 22.59:
+* Optimised cli feature.
+
+Major change in version 22.58:
+* Open website on a new tab in UBA if config.openStudyWindowContentOnNextTab is True and config.useWebbrowser is False
+
+Major change in version 22.57:
+* Fixed href hyperlinks in user-created modules.
+
+Major change in version 22.56:
+* Added "Command Line Interface" to menu, visible only when cli feature is enabled.
+* Added command keywords "_cp" and "_mastercontrol"
+
+Major change in version 22.55:
+* Fixed an issue launching UBA without cli feature.
+* Read about Command Line Interface at https://github.com/eliranwong/UniqueBible/wiki/Command-Line-Interface
+
+Major change in version 22.54:
+* Fixed an update issue
+
+Major changes in version 22.52, 53:
+* Fixed running Command Line Interface on Windows and macOS
+
+Major changes in version 22.51:
+* Fixed updating issues with starter menu layout.
+
+Major changes in version 22.50:
+* Fixed the issue that starter menu layout cannot start with qt-material theme.
+* Added bible version full names as tooltips to starter menu layout dropdown menu.
+
+Major changes in version 22.49:
+* Added support of "uba.py gui" to launch straight with gui, but also have cli enabled.
+    The difference between "uba.py" and "uba.py gui" is that the later have an extra option to switch to cli by selecting "Command Line Interface" from context menu.
+
+Major changes in version 22.48:
+* Added layout plugin
+* Added starter menu layout
+* Added ability to switch between cli and gui at any time.
+    To start uba with "uba.py cli", users can select "Command Line Interface" from right-click context menu to switch to cli.
+
+Major changes in version 22.47:
+* Added local cli feature.
+* Now run "uba.py cli" to run UBA with command line interface.
+* Now run "uba.py telnet-server" to run UBA as a telnet server.
+
+Major changes in version 22.46:
+* Added translation on program interface in Malayalam.
+
+Major changes in version 22.45:
+* Added Chinese, French, Spanish hymn lyrics.
+* UBA now runs startup plugins before running initial commands.
+* Added two startup plugins to enhance hovering feature of bible links, "addHoverFeatureToBibleLinks.py" and "transformSingleVerseLinkToRange.py".
+Remarks: To use plugins, make sure you have "enablePlugins" checked on "Set Config Flags" window.
+
+Major changes in version 22.44:
+* reorganised plugins folders
+* added two more types of plugins, startup plugins and shutdown plugins
+* added access points for plugins to process bible window and study window content before they are displayed
+    They are config.bibleWindowContentTransformers and config.studyWindowContentTransformers
+
+Major changes in version 22.43:
+* Added RefButtonSingleClickAction selection
+* Fixed typos in language files
+* Added install module utility
+
+Major changes in version 22.42:
+* Fixed a missing button in note editor.
+* Fixed the issue that toolbar was unable to be made visible.
+
+Major changes in version 22.41:
+* Fixed an issue switching from Aleph menu layout to Focus menu layout.
+
+Major changes in version 22.40:
+* Fixed LXX cannot be displayed on simple mode.
+
+Major changes in version 22.39:
+* Added config.contextSource.  This could be helpful to tell a context plugin from where it is called from.
+
+Major changes in version 22.38:
+* Fixed running UBA Context Plugins from right-click context menu
+* Added two sample context plugins, "Speak Hebrew" and "Speak Greek"
+
+Major changes in version 22.37:
+* Now open setup instructions on Watson translator and google drive for users.
+
+Major changes in version 22.34, 35, 36:
+* Now restoring notes from Google Drive automatically refreshs current content.
+* A wiki page is written about Notes Backup / Restore with Google drive
+    https://github.com/eliranwong/UniqueBible/wiki/Notes-Backup-with-Google-Drive
+
+Major changes in version 22.31, 32, 33:
+* Improved Backup Notes to Google Drive, automatically updated an existing files without duplication.
+* Improved feedback message displayed to users with using Google Drive Notes backup / restore.
+* Fixed checking credential file location.
+* Fixed saving file cloud id.
+
+Major changes in version 22.29, 30:
+* Fixed loading plugins from menu.
+* To use plugins, you need to check "enablePlugins" via "Set Config Flags" window.
+* Added a couple of plugins: "Backup Notes to GDrive" and "Restore Notes to G-Drive".  (Remarks: G-Drive denotes Google Drive).
+  To use these new plugins, you need to download 'credentials.json' from https://developers.google.com/drive/api/v3/quickstart/python and place it in UniqueBible root directory.
+
+Major change in version 22.28:
+* Added options to specify the width and height of mini Control window
+* Revised Aleph menu layout
+
+Major change in version 22.27:
+* Added config.masterControlWidth to specify the width of Master Control panel.
+
+Major changes in version 22.26:
+* Added "UBA Plugins"
+    Read more at: https://github.com/eliranwong/UniqueBible/wiki/UBA-Plugins
+* Added "UBA Context Plugins"
+    Read more at: https://github.com/eliranwong/UniqueBible/wiki/UBA-Context-Plugins
+* Added support of passing a python script to uba.py on startup
+    Read more at: https://github.com/eliranwong/UniqueBible/wiki/Pass-Argument-to-uba.py
+
+Major change in version 22.25:
+* Now assign UBA's main window to config.mainWindow
+    This opens up a lot of possiblity for users for use "customised python script" on startup.
+    This featuer may also allow python programmers to develop "plugins" for use with UBA.
+    Read https://github.com/eliranwong/UniqueBible/wiki/Custom-Python-Script for more information.
+
+Major change in version 22.24:
+* Add overwriteBookFontFamily to config
+
+Major changes in version 22.23:
+* Added config options, popoverWindowWidth & popoverWindowHeight, to set popover window height and width.
+* Fixed width of Master Control window.
+* Setting "populateTabsOnStartup" to True no longer changes "openBibleWindowContentOnNextTab" and "openStudyWindowContentOnNextTab" on startup.
+* Added support of custom python script on startup.  "custom.py" is created on startup if it doen't exist.
+
+Major changes in version 22.22:
+* Added tooltips to Master Control tabs
+
+Major changes in version 22.21:
+* Added a column to "Set Config Flags" window.
+
+Major changes in version 22.19, 20:
+* Added a config flat "populateTabsOnStartup", configurable via "Set Config Flags" window.  It is set to False by default.
+* Added ability to start up UBA with all tabs populated with latest history records by setting "config.populateTabsOnStartup" to True
+    Remarks: Turning on this feature takes longer time to start up UBA, especially if you have a lots of tabs.
+* Note Editor is now brought to foreground when user cancel closing it if changes are not saved.
+
+Major changes in version 22.18:
+* Revised traditional Chinese interface
+* Revised simplified Chinese interface
+
+Major changes in version 22.17:
+* Added Hymm Lyrics; downloadable via "Resources" menu.
+* Renamed "Open on New Window" to "New Window"
+* Relocated "New Window" on right-click context menu.
+* Updated language files
+
+Major changes in version 22.16:
+* Added "Open on New Window" on right-click context menu.
+* Updated language files.
+
+Major change in version 22.15:
+* Fixed fcitx input plugin for PyQt5 users on Linux platform.
+
+Major change in version 22.13, 14:
+* Fixed signal syntax
+
+Major change in version 22.12:
+* Added support of text-to-speech feature to PyQt5 users.
+
+Major change in version 22.11:
+* Added support of using PyQt5 as an alternative to PySide2
+* Module 'PyQt5' is installed automatically ONLY if PySide2 is not supported on user's device.
+* It is a big issue.  Welcome report of issues if any
+
+Major change in version 22.10:
+* Added support of arguments to uba.py, can now run,
+    For example:
+        uba.py John 3:16 Rm 5:8
+    or if you set uba as an alias:
+        uba John 3:16 Rm 5:8
+    Remarks: do not use comma as part of argument.
+
+Major change in version 22.09:
+* Added support converting commands during book creation.
+
+Major change in version 22.08:
+* Added "Select Tooltip Translation" in developer menu.
+
+Major changes in version 22.07:
+* Added Macro support commands, Createed Book Module From Hymn Lyrics File
+* Now automatically save option of language file as config.workingTranslation when user select a language from dropdown menu displayed with "Edit language file".
+
+Major changes in version 22.06:
+* Fixed automatic setup
+* Fixed Edit Gui Language File Dialog
+
+Major changes in version 22.05:
+* Fixed old pip tool unable to install package for users.
+* Fixed button width on macOS for Focus menu layout.
+
+Major changes in version 22.04:
+* Added filtering of tooltips in Edit Gui Language File Dialog
+* Added config.workingTranslation
+* Added a method to open working translation directly on Focus menu layout
+
+Major changes in version 22.03:
+* added tooltips to Edit Gui Language File Dialog
+* added config flags: referenceTranslation
+
+Major changes in version 22.02:
+* Fixed Modify Database Dialog
+* Fixed retrieving full name of bible modules
+* Added displaying bible full names as tooltip in bible version dropdown menu on Master Control and Focus menu
+* Show English translation in EditGuiLanguageFileDialog popup
+
+Major changes in version 22.01:
+* Master Control Library tab now display commentary full names and abbreviations as tooltips
+
+Major changes in version 22.0:
+* Added Malayalam, built-in font, EditGuiLanguageFileDialog
+
+Major change in version 21.99:
+* Added tweaks for Chrome OS users
+* Added fcitx support for Linux users.
+
+Major change in version 21.98:
+* Added commentary "CBSC" to automatic setup for fresh installation.
+
+Major change in version 21.97:
+* Fixed an issue that new users were not able to use Smart Index feature and some other features due to missing files.
+
+Major change in version 21.96:
+* Now automate downloading initial content for fresh installation
+
+Major changes in version 21.95:
+* Tested installation automation on Windows, macOS and Linux
+* Now automate creation of application shortcuts
+* Added support for builtin fonts for Bible display
+* Moved Individual Bibles font settings under UniqueBible > UBA Preferences > Fonts on Focus menu layout
+
+Major changes in version 21.94:
+* Fixed font issue
+* Revised Aleph menu layout
+
+Major change in version 21.93:
+* Fixed setup automation on Windows
+
+Major change in version 21.92:
+* Added automation to create virtual environment for users.  Tested on Linux.  Pending test on macOS and Windows.
+* Changed config.removeHighlightOnExit default value to True for new users.
+
+Major change in version 21.91:
+* Fixed LanguageUtil.py
+
+Major change in version 21.88, 21.89, 21.90:
+* Added support to automate installation
+* Running "python3 main.py" now automatically install missing modules for users.
+
+Major change in version 21.87:
+* Added font styling for individual bibles
+
+Major change in version 21.86:
+* Fixed pytest
+* Adding support of installing missing modules 
+
+Major change in version 21.85:
+* Fixed installating modules
+
+Major change in version 21.84:
+* Fixing translation feature
+
+Major change in version 21.83:
+* Adding support of installing missing modules 
+
+Major change in version 21.82:
+* Added initial support of installing optional modules for new users.
+
+Major change in version 21.81:
+* Install required modules for new users.
+
+Major change in version 21.80:
+* Reorganised files and codes to prepare for next update.
+* No practical change in this version.
+
+Major changes in version 21.79:
+* Added config.miniControlInitialTab, options 0-4, to specify the initial tab to be displayed when miniControl is opened.
+* Added options to Focus menu layout, to open individual tabs of mini Control window
+* Added built-in keyboard shortcuts to switch between tabs on miniControl when miniControl is opened.
+    - Ctrl+B - Bible
+    - Ctrl+T - Translations
+    - Ctrl+C - Commentaries
+    - Ctrl+L - lexicons
+    - Ctrl+D - Dictionaries
+* Added "New Note" to right-click context menu, to open a new note and insert selected text into it.
+* Fixed the issue that note editor was not bring to foreground after user being warned of unsaved changes.
+
+Major change in version 21.78:
+* Now changing text-to-speech language on Master Control Miscellaneous tab changes default text-to-speech language.
+    Therefore, users can allow quickly change the default text-to-speech language by calling Miscellaneous tab with keyboard shortcut Ctrl+M.
+* Read more at: https://github.com/eliranwong/UniqueBible/wiki/Text-to-Speech
+
+Major change in version 21.77:
+* Added a config flag "useLangDetectOnTts", It is set to False by default, because the feature is not always reliable.
+    - Turning it on will use python module "langdetect" to detect language on selected text when user uses "Speak" feature from right-click context menu.
+    - Turning it off will use Default Text-to-Speech language specified by user.
+    - Default text-to-speech language is configurable via Focus menu layout: UniqueBible > Language Settings > Text-to-Speech Language
+
+Major change in version 21.76:
+* Fixed the issue that bible format switch didn't work on Aleph and Classic menu layouts
+
+Major changes in version 21.75:
+* Added download utility
+* Added app information / latest changes dialog to Focus and Classic menu layouts
+* Added Watson Translator Credential Window
+* Now automatically print selected text from Main Window or Study Window when to search field when Master Control Search tab is opened.
+    - If both Main Window and Study Window have text selected, Main Window selected text will be printed.
+
+Major changes in version 21.74:
+* Revised Aleph menu layout
+* Revised Focus menu layout
+* Added app information / latest changes dialog, accessible from Aleph menu layout
+
+Major changes in version 21.73:
+* Revised Focus menu layout
+* Reorganised Language Setttings, now quicker choosing default text-to-speech language
+
+Major changes in version 21.72:
+Revised right-click context menu:
+- Added "Search Panel" to context menu so that users can select word(s) and launch Master Control Search panel with selected word(s) placed in search field.
+- Hide "Translation" option from right-click context menu if user does not select language for translation.
+
+Major changes in version 21.71:
+* Revised Aleph menu layout
+* Revised App Update Dialog
+* Fixed commands were blocked to execute from note hyperlinks.
+
+Major change in version 21.70:
+* Now convert text string formatted as ***[uba_command@display_text] into hyperlink automatically.  This feature works on all content displayed on Study Window.
+* Check our sample file "note_command_hyperlink_example.uba" if you are interested.
+
+Major changes in version 21.69:
+* Master Control panel now reloads resources after downloading a module with download helper or importing a module through our menu.
+* Fixed verse number single-click action to open classic menu
+* Fixed the issue that COMPARE::: was misplaced in study window history records with verse number single-click or double-click action
+* Fixed some of verse number single-click actions were not displayed on screen.
+* Added an option to specify maximum number of history records, from 5 to 100, with a gui dialog.
+    This dialog is now accessible via Focus menu layout > UBA Preferences > General > Select Maxium Number of History Records.
+
+Major change in version 21.68:
+* Now automatically reload Master Control panel after a module is downloaded with download helper.
+
+Major change in version 21.67:
+* Fixed Focus menu layout enable study window bible button
+* Removed extra window when focus menu layout is used.
+
+Major change in version 21.66:
+* Now add verse number single-click and double-click actions to history.
+* Now open Master Control panel "Bible" tab by default when a bible chapter heading is clicked.
+* Added a config flag "preferHtmlMenu" to opt for opening classic html menu when a bible chapter heading is clicked.
+* Added verse number single-click and double-click options to classic menu layout.
+
+Major change in version 21.65:
+* Fixed an issue introduced from version 21.55 that cause Note Editor not able to be opened.
+
+Major change in version 21.64:
+* Dynamic changing program interface now applies to Master Control panel.
+* Add "Reload Resources" under "Master Control" section on "Focus menu layout".
+    - This is useful for reloading resources displayed on Master Control panel without restarting the app.
+
+Major change in version 21.63:
+* Fixed downloading module issue.
+
+Major changes in version 21.62:
+* Fixed check for internet connectivity.
+
+Major changes in version 21.61:
+* Added update control
+* Added subprocess to install missing module for current users, using pip3 command.
+
+Major changes in version 21.60:
+* Fixed opening websites with ONLINE::: keyword.
+* Added two new config flats, 'useWebbrowser' and 'removeHighlightOnExit'.
+* Added recording ONLINE::: commands to history.
+
+Major changes in version 21.59:
+* Added "Instant Highlight" feature that highlight word(s) on Main Window
+* Added itmes to right-click context menu:
+    - Instant Highlight (Main Window ONLY)
+    - Remove Instant Highlight (Main Window ONLY)
+    - Search Book Note
+    - Search Chapter Note
+    - Search Verse Note
+    - Remove Note Highlight
+    - Remove Book Highlight
+
+Major change in version 21.58:
+* Add "All Books" button on control panel "Search" tab, for users to search all book modules.
+* Fixed debug report feature.
+
+Major change in version 21.57:
+* Added tooltips to Config Flags Window's items.
+* Fixed LanguageUtil tranlation code on Traditional Chinese 
+
+Major change in version 21.56:
+* renamed a config flag 'openBibleNoteAfterEditing' to 'openBibleNoteAfterEditorClosed'
+
+Major changes in version 21.55:
+* added filter on shortcut display window
+* added 'Text Utility' toolbars on Note Editor, with which users can play text-to-speech or translate selected text.
+* added open note commands to history so that reloading works
+* added icon buttons to Note Editor
+* added updateLanguageStringToAllFiles method for developers to update existing language files
+* added message to users if text-to-speech is not enabled on their device
+* added open bible notes commands to history records so reloading records can update their content
+* fixed missing comma in some language files
+* updated language files
+* removed unused codes
+* removed duplicated keys in language files
+
+Major change in version 21.54:
+* Added tool to add string to language files
+
+Major change in version 21.53:
+* Added gui to search selected morphology in combination with selected translation
+* Renamed an existing command keyword from INTERLINEAR::: to DISTINCTINTERLINEAR:::, e.g. DISTINCTINTERLINEAR:::G746
+* Added a command keyword DISTINCTTRANSLATION:::, e.g. DISTINCTTRANSLATION:::G746
+
+Major change in version 21.52:
+* Fixed focus menu layout.  Users can now switch interface language by selecting language directly from menu, without an extra step to open a dialog window for language selection.
+
+Major changes in version 21.51:
+* Revised Focus menu layout, can now select interface language without opening a dialog.
+* Fixed translation language selection dialog.
+Translation language is different from interface language.
+# Translation language is used when user translate a selected word with right-click menu or use TRANSLATE::: command
+# For example, a user can use English menu but he can translate a word into Chinese.
+
+Major changes in version 21.50:
+* revised languge codes from zh_CN to zh_HANS, from zh_TW to zh_HANT
+* added config option 'myIBMWatsonVersion' to allow users to specify the IBM Watson version they use.
+
+Major changes in version 21.49:
+* This version has a new and useful feature.
+  @osteng added dynamic selection of program interface languages.  Thank you, Oliver.
+UBA now has these built-in languages:
+German Deutsch
+English (UK)
+English (US)
+Spanish Español
+French Français
+Hindi हिन्दी
+Italian Italiano
+Japanese 日本語
+Korean 한국어
+Russian Русский язык
+Chinese (Simplified) 中文
+Chinese (Traditional) 古文
+
+Major changes in version 21.48:
+* fixed on a startup issue
+
+Major changes in version 21.47:
+* Now playing text-to-speech on Miscellaneous tab won't auto close Master Control panel
+* Removed package googletrans from requirement and related codes
+* Translation feature now use IBM Watson translation service, integrated into TRANSLATE::: command and right-click context menu
+* Fixed auto-copy to clipboard after a translation is done.
+* Fixed Focus menu layout version dropdown menu not updating
+* To use translation interface in UBA, users need to register an IBM Cloud account.
+* IBM Cloud Lite account is FREE! With this, users can translate "1,000,000 characters per month at no cost"
+To enable IBM-Watson Language Trans:
+1) Register an IBM CLoud account (there are several types, the Lite one is FREE)
+   You can find a registration link at https://www.ibm.com/cloud/watson-language-translator/pricing
+2) After registration, go to login page https://cloud.ibm.com/login to login into your IBM cloud account.
+3) Go to Menu > Resource list > Service > Language 
+   We have two screenshots in this wiki page: https://github.com/eliranwong/UniqueBible/wiki/IBM-Watson-Language-Translator
+4) Copy the "API key" and "URL"
+5) You are about to edit UBA file config.py, so make sure you are not running UBA while editing this file.
+   Close UBA first if it is running.
+6) Use a simple text editor to open config.py
+7) Paste your apikey to INSIDE the pair of quotation marks of myIBMWatsonApikey = ''
+8) Paste your URL to INSIDE the pair of quotation marks of myIBMWatsonUrl = ''
+9) Save the file config.py
+10) Start UBA
+11) To test, run a command on main window command field, TRANSLATE:::en-zh:::testing
+12) Or, select a word from a bible chapter, right click and select "Translate into my language"
+13) Config flag, 'autoCopyTranslateResult' is turned on for you by default.  Therefore after a translation is done, you can paste the result whereever you like.
+
+Major change in version 21.46:
+* Fixed debug report
+
+Major change in version 21.45:
+* Fixed text-to-speech slider for adjusting speed
+* Fixed issue on bringing forward Master Control panel when it is placed behind the main window.
+* Added sending debug report feature.
+* Generated missing translation for Chinese interface.
+
+Major change in version 21.44:
+* Fixed TRANSLATE::: command
+* Now use IBM Watson translation service instead of google translate
+* This feature works ONLY if user install python package 'ibm-watson' and enter valid credentials in file config.py.
+* IBM Watson is a translation service.  It is free to use for translating 1 million characters per month.
+* Read details on IBM Watson service at: https://www.ibm.com/cloud/watson-language-translator/pricing
+* We will integrate this feature with right-click menu SEARCHBOOKNOTE
+* We will write a wiki page on it soon.
+
+Major change in version 21.43:
+* added a slider to Master Control Miscellenous tab to adjust text-to-speech speed
+* fixed unit test
+
+Major changes in version 21.42:
+* fixed opening website from Master Control panel when 'preferControlPanelForCommandLineEntry' is enabled.
+* open language selection dialog when users choose to change program interface translation.
+
+Major changes in version 21.41:
+* fixed startup issues with Chinese user interface
+* startup with Chinese interface is okay for now; wordings are still needed to be updated.
+
+Major changes in version 21.40:
+* now able to use online::: command with Master Control panel
+* fixed updating command entry from Master Control panel to main Window
+* fixed issue opening Set Config flags window.
+
+Major change in version 21.39:
+* added support of loading website directly on Study Window
+* To use this feature, enter a valid and full url in Main Window command field with prefix "online:::"
+* e.g. online:::https://google.co.uk
+* Remarks: you need to state the protocol, "online:::https://google.co.uk" works, but "online:::google.co.uk" does not.
+
+Major change in version 21.38:
+* added custom javascript feature for developers or module creators, read the following link for more information:
+* https://github.com/eliranwong/UniqueBible/wiki/custom_javascript
+
+Major changes in version 21.37:
+* added a mini web browser
+* integrated youtube downloader into mini web browser
+* buttons added for simple browsing
+* buttons added for downloading youtube audio and video from mini browser
+
+Major changes in version 21.36:
+* added support for searching bible with regular expression, accessible with Master Control 'Search' tab
+* added a command keyword 'REGEXSEARCH' for search with regular expression, e.g. REGEXSEARCH:::KJV:::God.*?heaven
+* added a config flag 'regexCaseSensitive' is for searching case-sensitive word(s) with regular expression
+
+Major change in version 21.35:
+* minor; removed two unused lines.
+
+Major change in version 21.34:
+* fixed missing shortcut file
+
+Major changes in version 21.33:
+Substantial update: a total of 32 files changes:
+* now support dynamic change of menu layout without restart
+* now support dynamic change of keyboard shortcut set without restart
+* added ability to edit cutom shortcuts with double-clicking on display shortcut window
+* added a new tab 'Miscellenous' to 'Master Control' panel
+* added highlights feature to Master Control
+* added YouTube downloader buttons to Master Control
+* added text-to-speech feature to Master Control
+* fixed keyboard shortcuts to switch between tabs of Master Control
+* refresh history records when Master Control tab is opened
+* set the search field in focus when Master Control Search tab is opened
+* renamed 'Remote Control' to 'mini Control'
+* increase the number of verse highlight collections from two to twelve
+* added quick access to verse highlight feature via Master Control
+* added ability to customise verse highlight collection name and colours
+* added ability to customise verse number single-click action (via Focus menu layout)
+* added ability to customise verse number double-click action (via Focus menu layout)
+* added ability to customise default text-to-speech voice (via Focus menu layout)
+* improved start-up speed
+* fixed known startup issues
+* revised shortcut set 'micron'
+
+Major changes in version 21.32:
+* Multiple fixes of custom shortcuts
+* Added a new shortcut set 'micron'
+for developer:
+* Gui on editing highlight collection is available for testing.  Interface only; not fully working yet.  This feature is scheduled to be released next upgrade.
+
+Major change in version 21.31:
+* fixed an issue on enableLogging
+* added a link to discussions
+
+Major change in version 21.30:
+* add ability to customise kyeboard shortcuts
+
+Major changes in version 21.29:
+Multiple improvement on Master Control Panel:
+* Added search highlight interface to Control Panel Search tab
+* Added support to rename highlight collections by editing config.py manually.  We will add a gui interface for doing that.
+* Added clear note search result checkbox to Control Panel Search tab
+* Added clear book search result checkbox to Control Panel Search tab
+* Added three buttons to control panel 'Library' tab 'Book' section: Show ALL, Favourites ONLY, Add Favourite
+* Integrated 'closeControlPanelAfterRunningCommand' with Master Control Panel
+* Fixed Control Panel didn't not response to shorcut when it is placed behind the main window.
+
+Major changes in version 21.28:
+* Improved Focus menu layout:
+    - added a dropdown menu on toolbar for quick change of bible versions on main window without opening control panel
+    - added to menu "Enable Qt-material theme" when built-in theme is in use
+    - added to menu "Switch to built-in theme" when qt-material theme theme is use
+    - added selection dialogs of built-in themes and qt-material themes
+    - added a menu item for downloading books
+* Improved Master Control Panel:
+    - added an "EDIT" button on history tab for opening note editor
+    - now automatically update bible reference on Bible tab when it is opened
+
+Major change in version 21.27:
+* Added functions to prompt new users to download book or commentary when one of them is accessed.
+
+Major changes in version 21.26:
+* Substantial changes in this upgrade.  A total of 36 files changed
+* New exciting featuers, e.g. Remote CLI, 
+* User interface is substantial changed with a newly designed Control Panel
+* A new menu layout name "Focus" is created.
+    This menu is designed to focus on bible study and have quick access to study tools.
+    This menu layout is fully integrated with latest features introduced in recent versions, such as new Control Panel, qt-material themes
+* Important fixes on download issues for new installation.
+* Fixed displaynig html content in dark theme
+* Fixed button width on Focus and classic menu layout, and party Aleph menu layout when qt-material is applied.
+* Added next and previous chapter buttons to navigate reference book content, available on Aleph and Focus Menu Layout
+* Added some bibles and lexicons to be downloaded on fresh installation.
+
+Major changes in version 21.25:
+* Added options to choose application window style, read more at:
+    https://github.com/eliranwong/UniqueBible/wiki/Window-Style
+* Added support of using qt-material colour themes, read more at:
+    https://github.com/eliranwong/UniqueBible/wiki/Themes
+
+Major change in version 21.24:
+* Fixed updating download history.
+
+Major change in version 21.23:
+* Notify current users to install module 'pygithub' if they enalble 'enableGist' on 'Select more ...' dialog.
+
+Major changes in version 21.22:
+* Fixed issue https://github.com/eliranwong/UniqueBible/issues/103
+* Fixed issue https://github.com/eliranwong/UniqueBible/issues/106
+* Ability to share Bibles notes across computers is added in last version.
+    To enable it, current users need to install a new module, by running:
+    > pip3 install pygithub
+    After installing pygithub, you need to enable "enableGist" via "Select More ..." settings dialog.
+
+Major changes in version 21.21:
+* Added ability to share Bibles notes across computers.  Thanks to Oliver Tseng for this helpful feature.
+    For more details, please read:
+    https://github.com/eliranwong/UniqueBible/wiki/Gist-synching
+    https://github.com/eliranwong/UniqueBible/issues/90
+* Fixed duplicate calls to mainTextCommandChanged
+* Removed buffer window; fixed Chrome OS Linux issues.  Installation guide rewritten for chromebook users at:
+    https://github.com/eliranwong/ChromeOSLinux/blob/main/bible/UniqueBibleApp.md
+* New interface added for developers to test, only visible if config.developer set to True.
+
+Major changes in version 21.20:
+- Added Bible Book notes on top of Chapter Notes & Verse Notes
+    * Read more about notes at: https://github.com/eliranwong/UniqueBible/wiki/Notes
+- New commands added for open / edit / search notes, e.g.:
+    * OPENBOOKNOTE:::John
+    * OPENCHAPTERNOTE:::John 3
+    * OPENVERSENOTE:::John 3:16
+    * EDITBOOKNOTE:::John
+    * EDITCHAPTERNOTE:::John 3
+    * EDITVERSENOTE:::John 3:16
+    * SEARCHBOOKNOTE:::faith
+    * SEARCHCHAPTERNOTE:::faith
+    * SEARCHVERSENOTE:::faith
+    * Read more about notes at: https://github.com/eliranwong/UniqueBible/wiki/Notes
+- Added a developer column in classcial menu layout for testing new features
+    * Developer column is visible only "developer" option in config.py is set to true.
+- New "Bible Explorer" Window added to developer menu
+
+Major changes in version 21.19:
+- separated download process from the main thread, so users can continue reading during downloading files, 
+        e.g. YouTube video / music / bible modules / resources
+
+Major changes in version 21.18:
+- Fixed pdf file opened twice after export each time.
+- Fixed book chapter with title containing ' not opened.
+
+Major change in version 21.17:
+- A tweak on Hebrew text-to-speech feature.
+
+Major change in version 21.16:
+Addreseed an issue: espeak itself does not support Hebrew language
+- Added a workaround on Hebrew text-to-speech feature for users who select espeak as text-to-speech engine.
+
+Major change in version 21.15:
+- Fix an issue to make sure text-to-speech audio is turned off upon closing.
+
+Major change in version 21.14:
+- Fixed "Select more ..." dialog item order.
+
+Major change in version 21.13:
+- Fixed stop audio button for qt text-to-speech engine.
+
+Major changes in version 21.12:
+- Added text-to-speech feature to control panel.  Users can now:
+    * set default text-to-speech language through control panel
+    * play audio of entered text in control panel command field.
+    * select lanuage for text-to-speech feature triggered from control panel.
+    * stop text-to-speech audio at any time with the "Stop" button.
+
+Major change in version 21.11:
+- Fixed saving tts settings on exit.
+
+Major change in version 21.10:
+- Added a column to "Select More ..." dialog
+
+Major changes in version 21.09:
+- Enhance text-to-speech feature:
+    Added support of languages, as many as supported by the tts engine selected by users.
+        * Remarks: espeak users need to install additional data for espeak to read Chinese or Russian texts.
+        * For espeak setup, you may read https://github.com/eliranwong/ChromeOSLinux/blob/main/multimedia/espeak.md
+    Added config.ttsDefaultLanguage for users to specify the default language for text-to-speech feature
+        * If language is not specified with entered command, e.g. "SPEAK:::testing", ttsDefaultLanguage is used by default.
+        * ttsDefaultLanguage is set to "en" by default, users can edit file config.py to change its value.
+        * References for supported language codes can be found at: https://github.com/eliranwong/UniqueBible/blob/master/TtsLanguages.py
+            If you use espeak, supported languages are the key codes of variable "isoLang2epeakLang" in the file above.
+            If you use built-in qt tts engine, supported languages are the key codes in variable "isoLang2qlocaleLang" in the file above.
+- Added four more configuration flags:
+    You can configure the following new flags through "Select More ..." dialog or by editing file config.py
+        * ttsEnglishAlwaysUS
+            always speak US English when detected/specified language is en or en-gb
+        * ttsEnglishAlwaysUK
+            always speak UK English when detected/specified language is en or en-gb
+        * ttsChineseAlwaysMandarin
+            always speak Mandarin when detected/specified language is zh-cn or zh-tw
+        * ttsChineseAlwaysCantonese
+            always speak Cantonese when detected/specified language is zh-cn or zh-tw
+A note to Windows users, in order for built-in qt tts engine to read text of a particular language, you have to install Windows language package via Windows settings / control panel.
+
+Major changes in version 21.08:
+- Added initial support of "espeak" to run text-to-speech feature.
+    * To set up espeak on Linux, you may read https://github.com/eliranwong/ChromeOSLinux/blob/main/multimedia/espeak.md
+    * Further support will be added in next upgrade.
+- Added configuration flag, espeak, for linux users to use espeak as text-to-speech engine instead of qt text-to-speech engine.  This is accessible via menu > "Select More ...".
+- Fixed Zefania import
+
+Major changes in version 21.07:
+- Now create an empty file custom.css instead of downloading it during upgrading or new installation.
+
+Major changes in version 21.06:
+- Added support of custom css.  Users can now customise fonts, text styles, etc.
+- A wiki page created for custom css feature: https://github.com/eliranwong/UniqueBible/wiki/custom_css
+- Added a configuration flag: closeControlPanelAfterRunningCommand
+- now automatically detects if UniqueBible.app is installed on a chromebook, option "preferMiniControlForCommandLineEntry" will be automatically configured.
+
+Major changes in version 21.05:
+- Fixed issues #80 and #82
+- Enabled github pipeline build and fix warnings
+
+Major changes in version 21.04:
+- Fixed issue when selecting Bible that has no commentary entry #78
+- Improved classic menu layout: new items added; previous items reorganised.
+
+Major changes in version 21.03:
+- "Remote Control" is renamed to "Control Panel"
+- Configuration option "preferMiniControlForCommandLineEntry" introduced in version 20.8 is renamed to "preferControlPanelForCommandLineEntry".
+- Options to enforce comparison / parallel: True / False
+* When it is enabled after comparison / parallel feature is loaded once, subsequence entries of bible references will be treated as launching comparison / parallel even COMPARE::: or PARALLEL::: keywords is not used.
+* Please note that change in bible version for chapter reading is ignored when this option is enabled.
+* This feature is accessible via a left toolbar button, newly created under the "Comparison / Parallel Reading / Difference" button.
+
+Major changes in version 21.02:
+- Added command prefix to remote control when tab is changed, so as to save time for typing
+- Added ability to run command or parse references directly from clipboard.  Users can now copy text or type command in 3rd party softwares and run in UBA.
+
+Major change in version 21.01:
+- Fixed h1 is not defined error message
+
+Major changes in version 21.0:
+Added an app icon image
+Added two desktop shortcuts for Chrome users:
+    shortcut_uba_chromeOS.desktop
+    shortcut_uba_chromeOS_fcitx.desktop
+Chrome OS users can launch Unique Bible App through Chrome OS launcher.
+IMPORTANT! Before you can use this file, you need to edit these files and change "yourUserName" to your user name.
+For details, you may read our instructions on installing UBA on Chrome OS at:
+https://github.com/eliranwong/ChromeOSLinux/blob/main/bible/UniqueBibleApp.md
+
+Major changes in version 20.9:
+Fixed Codes:
+    Conflicts between im method settings for Linux users fixed.
+Added files:
+    Two shortcut files to run UBA on Chrome OS:
+    - shortcut_uba_chromeOS.sh
+    - shortcut_uba_chromeOS_fcitx.sh
+Added features:
+    Startup macro
+    Save current command as macro
+    Save highlights as macro
+    Print Remote Control command in command bar
+
+Major changes in version 20.8:
+Fixed 1 issue:
+    Fixed set main window command line field to focus when it is hidden.
+Added 3 configuration flags:
+    config.fcitx
+    [only application on Linux platform, it forces the app to use fcitx as input method.  It works only if fcitx is properly installed.  Since ibus is another available option, Linux users can only choose one of them.]
+    config.addBreakAfterTheFirstToolBar
+    config.addBreakBeforeTheLastToolBar
+    [The last two above may be useful when user opt for preferMiniControlForCommandLineEntry, introduced since version 20.5.  From version 20.8, main window command line field is hidden at launch if users enable preferMiniControlForCommandLineEntry.  The two flags above can help users to arrange toolbar in order to save spaces.]
+
+Major change in version 20.7:
+Added missing macros folder when users update.
+
+Latest changes in version 20.6: 
+Merged @otseng new PR:
+    Added Macros shortcut
+    Fixed duplicate listing of Bibles
+
+Latest changes in version 20.5:
+Added a configuration option: preferMiniControlForCommandLineEntry
+It is an enhancement in general and a workaround address to a Chrome OS address.
+You may read more about this feature at:
+https://github.com/eliranwong/UniqueBible/wiki/preferMiniControlForCommandLineEntry
+
+Latest changes in version 20.4:
+Fixes 2 issues found:
+    https://github.com/eliranwong/UniqueBible/issues/68
+    https://github.com/eliranwong/UniqueBible/issues/69
+Unique Bible App desktop version can now use fcitx in Chrome OS's Linux (Crostini), read:
+    https://github.com/eliranwong/ChromeOSLinux/blob/main/bible/UniqueBibleApp.md
+    https://github.com/eliranwong/ChromeOSLinux/blob/main/input_method/fcitx.md
+
+Latest changes in version 20.3:
+- Added macros
+- Fixed startup if config.py missing
+
+Latest changes in version 20.2:
+- Fixed highlighting for reading bible chapter in formatted style.
+- Added next/previous verse/chapter buttons to Aleph menu.
+
+Latest changes in version 20.1:
+@otseng added a config option, useFastVerseParsing, to allow users to choose a faster parser.  Thank you, Oliver!
+By default, verse parsing will use standard parsing. Fast parsing option can be enabled in config flags.
+
+Latest changes in version 20.0:
+Speed up verse parsing (by @otseng)
+
+Latest changes in version 19.9:
+Added study tab names for bibles, commentaries, lexicons, search (by @otseng)
+
+Latest changes in version 19.8:
+Added highlight search by @otseng:
+        # Usage - SEARCHHIGHLIGHT:::[COLOR]:::[BIBLE_REFERENCE]
+        # To search entire Bible for all highlight
+        # e.g. SEARCHHIGHLIGHT:::all
+        # To search entire Bible for yellow highlight
+        # e.g. SEARCHHIGHLIGHT:::yellow:::all
+        # e.g. SEARCHHIGHLIGHT:::yellow
+        # To search New Testament for blue highlight
+        # e.g. SEARCHHIGHLIGHT:::blue:::nt
+        # To search Old Testament for blue highlight
+        # e.g. SEARCHHIGHLIGHT:::blue:::ot
+        # To search Matthew for blue highlight
+        # e.g. SEARCHHIGHLIGHT:::blue:::Matthew
+        # To search James for underline highlight
+        # e.g. SEARCHHIGHLIGHT:::underline:::James
+
+Latest changes in version 19.7:
+Merged Oliver new work on layout:
+- Add Aleph menu layout
+- Fix commentary issue in dark mode
+- Fix highlighting issue for Chinese Bibles
+
+Latest changes in version 19.5:
+Merged Oliver's new work on verse highlighting:
+- Verse highlighting released for testing. Enable it by checking enableVerseHighlighting and restarting app
+- Toggle the markers on and off in Layout / Toggle Highlight Markers
+- Highlight markers show up only in verse view to the left of the verses
+- There are currently 3 markers (yellow, blue, and underline)
+- There are some problems with viewing certain Bibles in formatted chapter view
+- This needs speed improvements. Not sure why it has lag responding to commands.
+
+Latest change in version 19.4:
+Latest changes in version 19.4:
+Merged Oliver's new PR.  Thanks to Oliver.
+- Add number buttons to remote control
+- Add dictionaries to remote control
+
+Latest changes in version 19.3:
+Oliver added tabs to Remote Control.  Thank you.
+
+Latest changes in version 19.2:
+Merged new additions contributed by Oliver Tseng.  Thanks to Oliver for making the app better and better.
+- Add importXMLBible (Zefania Bibles)
+- Catch global uncaught exceptions
+- Import bblx Bible
+- Always recreate MiniControl to show newly installed modules
+- Add bottom, right half screen size
+- Add screen size shortcuts
+- Add small size to instant
+- Bring remote control to foreground
+- Don't show main.html in command bar
+- Add fix database to menu
+- Copy lexicon to clipboard
+
 Latest changes in version 19.1:
 - Merged Oliver Tseng's lastest work:
 Populate Details table when importing a 3rd party Bible

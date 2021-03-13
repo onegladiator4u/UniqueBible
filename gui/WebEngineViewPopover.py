@@ -1,7 +1,7 @@
 import config
-from PySide2.QtCore import Qt
-from PySide2.QtWidgets import (QAction)
-from PySide2.QtWebEngineWidgets import QWebEngineView
+from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QAction
+from qtpy.QtWebEngineWidgets import QWebEngineView
 
 class WebEngineViewPopover(QWebEngineView):
 
@@ -20,7 +20,7 @@ class WebEngineViewPopover(QWebEngineView):
 
     def finishViewLoading(self):
         # scroll to the study verse
-        self.page().runJavaScript("var activeVerse = document.getElementById('v"+str(config.studyB)+"."+str(config.studyC)+"."+str(config.studyV)+"'); if (typeof(activeVerse) != 'undefined' && activeVerse != null) { activeVerse.scrollIntoView(); activeVerse.style.color = 'red'; } else { document.getElementById('v0.0.0').scrollIntoView(); }")
+        self.page().runJavaScript("var activeVerse = document.getElementById('v"+str(config.studyB)+"."+str(config.studyC)+"."+str(config.studyV)+"'); if (typeof(activeVerse) != 'undefined' && activeVerse != null) { activeVerse.scrollIntoView(); activeVerse.style.color = 'red'; } else if (document.getElementById('v0.0.0') != null) { document.getElementById('v0.0.0').scrollIntoView(); }")
 
     def popoverTextCommandChanged(self, newTextCommand):
         # reset document.title
@@ -41,7 +41,7 @@ class WebEngineViewPopover(QWebEngineView):
         self.addAction(runAsCommandLine)
 
     def messageNoSelection(self):
-        self.parent.displayMessage("{0}\n{1}".format(config.thisTranslation["message_run"], config.thisTranslation["message_selectWord"]))
+        self.parent.displayMessage("{0}\n{1}".format(config.thisTranslation["message_run"], config.thisTranslation["selectTextFirst"]))
 
     def copySelectedText(self):
         if not self.selectedText():

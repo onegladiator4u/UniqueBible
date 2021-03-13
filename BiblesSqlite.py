@@ -5,12 +5,11 @@ import os, sqlite3, config, re, logging
 from NoteSqlite import NoteSqlite
 from BibleVerseParser import BibleVerseParser
 from BibleBooks import BibleBooks
+from NoteSqlite import NoteSqlite
+from db.Highlight import Highlight
 from themes import Themes
-
-try:
-    from diff_match_patch import diff_match_patch
-except:
-    print("Package 'diff_match_patch' is missing.  Read https://github.com/eliranwong/UniqueBible#install-dependencies for guideline on installation.")
+from util.NoteService import NoteService
+from util.TextUtil import TextUtil
 
 class BiblesSqlite:
 
@@ -43,11 +42,12 @@ class BiblesSqlite:
         return [self.getPlainBibleList(), self.getFormattedBibleList(includeMarvelBibles)]
 
     def getPlainBibleList(self):
-        return ["OHGB", "OHGBi", "LXX"]
+        return self.getBibleList2()
+        # return ["OHGB", "OHGBi", "LXX"]
 
     def getFormattedBibleList(self, includeMarvelBibles=True):
         formattedBiblesFolder = os.path.join(config.marvelData, "bibles")
-        formattedBibles = [f[:-6] for f in os.listdir(formattedBiblesFolder) if os.path.isfile(os.path.join(formattedBiblesFolder, f)) and f.endswith(".bible") and not re.search("^[\._]", f)]
+        formattedBibles = [f[:-6] for f in os.listdir(formattedBiblesFolder) if os.path.isfile(os.path.join(formattedBiblesFolder, f)) and f.endswith(".bible") and not re.search(r"^[\._]", f)]
         if not includeMarvelBibles:
             formattedBibles = [bible for bible in formattedBibles if not bible in self.marvelBibles]
         return sorted(formattedBibles)
@@ -162,6 +162,10 @@ class BiblesSqlite:
                 check = len(bcList)
                 bookNo = bcList[0]
                 engFullBookName = BibleBooks().eng[str(bookNo)][-1]
+                engFullBookNameWithoutNumber = engFullBookName
+                matches = re.match("^[0-9]+? (.*?)$", engFullBookName)
+                if matches:
+                    engFullBookNameWithoutNumber = matches.group(1)
                 # check book name
                 #print(engFullBookName)
                 if check >= 1:
@@ -182,9 +186,9 @@ class BiblesSqlite:
                     # build search timelines button
                     timelinesButton = "<button class='feature' onclick='document.title=\"SEARCHBOOKCHAPTER:::Timelines:::{0}\"'>{1}</button>".format(engFullBookName, config.thisTranslation["html_timelines"])
                     # build search encyclopedia button
-                    encyclopediaButton = "<button class='feature' onclick='document.title=\"SEARCHTOOL:::{0}:::{1}\"'>{2}</button>".format(config.encyclopedia, engFullBookName, config.thisTranslation["context1_encyclopedia"])
+                    encyclopediaButton = "<button class='feature' onclick='document.title=\"SEARCHTOOL:::{0}:::{1}\"'>{2}</button>".format(config.encyclopedia, engFullBookNameWithoutNumber, config.thisTranslation["context1_encyclopedia"])
                     # build search dictionary button
-                    dictionaryButton = "<button class='feature' onclick='document.title=\"SEARCHTOOL:::{0}:::{1}\"'>{2}</button>".format(config.dictionary, engFullBookName, config.thisTranslation["context1_dict"])
+                    dictionaryButton = "<button class='feature' onclick='document.title=\"SEARCHTOOL:::{0}:::{1}\"'>{2}</button>".format(config.dictionary, engFullBookNameWithoutNumber, config.thisTranslation["context1_dict"])
                     # display selected book
                     menu += "<br><br><b>{2}</b> <span style='color: brown;' onmouseover='bookName(\"{0}\")'>{0}</span> {1}<br>{3} {4} {5} {6}".format(bookAbb, openOption, config.thisTranslation["html_current"], introductionButton, timelinesButton, dictionaryButton, encyclopediaButton)
                     # add chapter menu
@@ -310,7 +314,7 @@ input.addEventListener('keyup', function(event) {0}
 
     def formVerseTag(self, b, c, v, text=config.mainText):
         verseReference = self.bcvToVerseReference(b, c, v)
-        return "<ref id='v{0}.{1}.{2}' onclick='document.title=\"_stayOnSameTab:::\"; document.title=\"BIBLE:::{3}:::{4}\"' onmouseover='document.title=\"_instantVerse:::{3}:::{0}.{1}.{2}\"' ondblclick='document.title=\"_menu:::{3}.{0}.{1}.{2}\"'>".format(b, c, v, text, verseReference)
+        return "<ref id='v{0}.{1}.{2}' onclick='document.title=\"_stayOnSameTab:::\"; document.title=\"BIBLE:::{3}:::{4}\";' onmouseover='document.title=\"_instantVerse:::{3}:::{0}.{1}.{2}\"' ondblclick='document.title=\"_menu:::{3}.{0}.{1}.{2}\"'>".format(b, c, v, text, verseReference)
 
     def readTextChapter(self, text, b, c):
         plainBibleList, formattedBibleList = self.getTwoBibleLists()
@@ -418,7 +422,10 @@ input.addEventListener('keyup', function(event) {0}
             return "".join([self.readTranslations(b, c, v, texts) for b, c, v in verseList])
 
     def diffVerse(self, verseList, texts=["ALL"]):
-        return "".join([self.readTranslationsDiff(b, c, v, texts) for b, c, v in verseList])
+        if config.isDiffMatchPatchInstalled:
+            return "".join([self.readTranslationsDiff(b, c, v, texts) for b, c, v in verseList])
+        else:
+            return config.thisTranslation["message_noSupport"]
 
     def compareVerseChapter(self, b, c, v, texts):
         # get a combined verse list without duplication
@@ -478,26 +485,26 @@ input.addEventListener('keyup', function(event) {0}
         texts.insert(0, mainText)
 
         verses = "<h2>{0}</h2>".format(self.bcvToVerseReference(b, c, v))
-        try:
-            dmp = diff_match_patch()
-            *_, mainVerseText = self.readTextVerse(mainText, b, c, v)
-            for text in texts:
-                book, chapter, verse, verseText = self.readTextVerse(text, b, c, v)
-                if not text == mainText and not text in config.originalTexts:
-                    diff = dmp.diff_main(mainVerseText, verseText)
-                    verseText = dmp.diff_prettyHtml(diff)
-                divTag = "<div>"
-                if b < 40 and text in config.rtlTexts:
-                    divTag = "<div style='direction: rtl;'>"
-                verses += "{0}({1}{2}</ref>) {3}</div>".format(divTag, self.formVerseTag(b, c, v, text), text, verseText.strip())
-            config.mainText = mainText
-            return verses
-        except:
-            return "Package 'diff_match_patch' is missing.  Read <ref onclick={0}website('https://github.com/eliranwong/UniqueBible#install-dependencies'){0}>https://github.com/eliranwong/UniqueBible#install-dependencies</ref> for guideline on installation.".format('"')
+        from diff_match_patch import diff_match_patch
+        dmp = diff_match_patch()
+        *_, mainVerseText = self.readTextVerse(mainText, b, c, v)
+        for text in texts:
+            book, chapter, verse, verseText = self.readTextVerse(text, b, c, v)
+            if not text == mainText and not text in config.originalTexts:
+                diff = dmp.diff_main(mainVerseText, verseText)
+                verseText = dmp.diff_prettyHtml(diff)
+                if config.theme == "dark":
+                    verseText = self.adjustDarkThemeColorsForDiff(verseText)
+            divTag = "<div>"
+            if b < 40 and text in config.rtlTexts:
+                divTag = "<div style='direction: rtl;'>"
+            verses += "{0}({1}{2}</ref>) {3}</div>".format(divTag, self.formVerseTag(b, c, v, text), text, verseText.strip())
+        config.mainText = mainText
+        return verses
 
     def removeVowelAccent(self, text):
         searchReplace = (
-            ("[\֑\֒\֓\֔\֕\֖\֗\֘\֙\֚\֛\֜\֝\֞\֟\֠\֡\֣\֤\֥\֦\֧\֨\֩\֪\֫\֬\֭\֮\ֽ\ׄ\ׅ\‍\‪\‬\̣\ְ\ֱ\ֲ\ֳ\ִ\ֵ\ֶ\ַ\ָ\ֹ\ֺ\ֻ\ׂ\ׁ\ּ\ֿ\(\)\[\]\*\־\׀\׃\׆]", ""),
+            (r"[\֑\֒\֓\֔\֕\֖\֗\֘\֙\֚\֛\֜\֝\֞\֟\֠\֡\֣\֤\֥\֦\֧\֨\֩\֪\֫\֬\֭\֮\ֽ\ׄ\ׅ\‍\‪\‬\̣\ְ\ֱ\ֲ\ֳ\ִ\ֵ\ֶ\ַ\ָ\ֹ\ֺ\ֻ\ׂ\ׁ\ּ\ֿ\(\)\[\]\*\־\׀\׃\׆]", ""),
             ("[שׂשׁ]", "ש"),
             ("[ἀἄᾄἂἆἁἅᾅἃάᾴὰᾶᾷᾳ]", "α"),
             ("[ἈἌἎἉἍἋ]", "Α"),
@@ -515,7 +522,7 @@ input.addEventListener('keyup', function(event) {0}
             ("[ὙὝὟ]", "Υ"),
             ("[ὠὤὢὦᾠὡὥὧᾧώῴὼῶῷῳ]", "ω"),
             ("[ὨὬὪὮὩὭὯ]", "Ω"),
-            ("[\-\—\,\;\:\\\?\.\·\·\‘\’\‹\›\“\”\«\»\(\)\[\]\{\}\⧼\⧽\〈\〉\*\‿\᾽\⇔\¦]", ""),
+            (r"[\-\—\,\;\:\\\?\.\·\·\‘\’\‹\›\“\”\«\»\(\)\[\]\{\}\⧼\⧽\〈\〉\*\‿\᾽\⇔\¦]", ""),
         )
         for search, replace in searchReplace:
             text = re.sub(search, replace, text)
@@ -558,9 +565,13 @@ input.addEventListener('keyup', function(event) {0}
 
         formatedText = "<b>{1}</b> <span style='color: brown;' onmouseover='textName(\"{0}\")'>{0}</span><br><br>".format(text, config.thisTranslation["html_searchBible2"])
         if text in plainBibleList:
-            query = "SELECT * FROM {0} WHERE ".format(text)
+            query = "SELECT * FROM {0}".format(text)
         elif text in formattedBibleList:
-            query = "SELECT * FROM Verses WHERE "
+            query = "SELECT * FROM Verses"
+        if not mode == "REGEX":
+            query += " WHERE "
+        else:
+            t = ()
         if mode == "BASIC":
             if referenceOnly:
                 searchCommand = "SEARCHREFERENCE"
@@ -581,6 +592,10 @@ input.addEventListener('keyup', function(event) {0}
             bible = Bible(text)
             verses = bible.getSearchVerses(query, t)
             del bible
+        # Search fetched result with regular express here
+        if mode == "REGEX":
+            formatedText += "REGEXSEARCH:::<z>{0}</z>:::{1}".format(text, searchString)
+            verses = [(b, c, v, re.sub("({0})".format(searchString), r"<z>\1</z>", verseText, flags=0 if config.regexCaseSensitive else re.IGNORECASE)) for b, c, v, verseText in verses if re.search(searchString, verseText, flags=0 if config.regexCaseSensitive else re.IGNORECASE)]
         formatedText += "<p>x <b style='color: brown;'>{0}</b> verse(s)</p>".format(len(verses))
         if referenceOnly:
             parser = BibleVerseParser(config.parserStandarisation)
@@ -610,23 +625,17 @@ input.addEventListener('keyup', function(event) {0}
                 for searchword in searchWords:
                     if not searchword == "z":
                         formatedText = re.sub("("+searchword+")", r"<z>\1</z>", formatedText, flags=re.IGNORECASE)
-            # fix searching LXX / SBLGNT words
-            formatedText = re.sub("<z>([LS][0-9]+?)</z>'\)"'"'">(.*?)</grk>", r"\1'\)"'"'r"><z>\2</z></grk>", formatedText)
-            # remove misplacement of tags <z> & </z>
-            p = re.compile("(<[^<>]*?)<z>(.*?)</z>", flags=re.M)
-            s = p.search(formatedText)
-            while s:
-                formatedText = re.sub(p, r"\1\2", formatedText)
-                s = p.search(formatedText)
+            # fix highlighting
+            formatedText = TextUtil.fixTextHighlighting(formatedText)
         return formatedText
 
     def getSearchVerses(self, query, binding):
         self.cursor.execute(query, binding)
         return self.cursor.fetchall()
 
-    def readMultipleVerses(self, inputText, verseList, displayRef=True):
+    def readMultipleVerses(self, inputText, verseList, displayRef=True, options={}):
         verses = ""
-        if config.addFavouriteToMultiRef and not inputText == config.favouriteBible:
+        if config.addFavouriteToMultiRef and not inputText == config.favouriteBible and "presentMode" not in options:
             textList = [inputText, config.favouriteBible]
         else:
             textList = [inputText]
@@ -651,7 +660,7 @@ input.addEventListener('keyup', function(event) {0}
                     verseText += " "
                 elif len(verse) == 4:
                     b, c, vs, ve = verse
-                    verseReference = "{0}-{1}".format(self.bcvToVerseReference(b, c, vs), ve)
+                    verseReference = self.bcvToVerseReference(b, c, vs) if vs == ve else "{0}-{1}".format(self.bcvToVerseReference(b, c, vs), ve)
                     v = vs
                     while (v <= ve):
                         if config.showVerseNumbersInRange:
@@ -666,7 +675,7 @@ input.addEventListener('keyup', function(event) {0}
                     if (cs > ce):
                         pass
                     elif (cs == ce):
-                        verseReference = "{0}-{1}".format(self.bcvToVerseReference(b, cs, vs), ve)
+                        verseReference = self.bcvToVerseReference(b, cs, vs) if vs == ve else "{0}-{1}".format(self.bcvToVerseReference(b, cs, vs), ve)
                         v = vs
                         while (v <= ve):
                             if config.showVerseNumbersInRange:
@@ -710,7 +719,12 @@ input.addEventListener('keyup', function(event) {0}
                             v += 1
                         c = cs
                         v = vs
-                if not displayRef or (counter == 1 and text == config.favouriteBible):
+                if "presentMode" in options:
+                    verses += ("<div style='display:flex;'>"
+                               "<div style='position: absolute;top: 50%;transform: translateY(-50%);{3}'>"
+                               "{0} ({1})<br/>{2}"
+                               "</div></div>").format(verseReference, text, verseText, options["style"])
+                elif not displayRef or (counter == 1 and text == config.favouriteBible):
                     verses += "{0}({1}{2}</ref>) {3}</div>".format(divTag, self.formVerseTag(b, c, v, text), text, verseText)
                 else:
                     verses += "{0}({1}{2}</ref>) {3}</div>".format(divTag, self.formVerseTag(b, c, v, text), verseReference, verseText)
@@ -720,15 +734,22 @@ input.addEventListener('keyup', function(event) {0}
         # expect verse is a tuple
         b, c, v, *_ = verse
         # format a chapter
-        chapter = "<h2>{0}{1}</ref>".format(self.formChapterTag(b, c, text), self.bcvToVerseReference(b, c, v).split(":", 1)[0])
-        # get a verse list of available notes
-        noteVerseList = []
+        chapter = "<h2>"
         if config.showNoteIndicatorOnBibleChapter:
             noteSqlite = NoteSqlite()
-            noteVerseList = noteSqlite.getChapterVerseList(b, c)
-            if noteSqlite.isChapterNote(b, c):
-                chapter += ' <ref onclick="nC()">&#9997</ref>'.format(v)
+            if noteSqlite.isBookNote(b):
+                chapter += '<ref onclick="nB()">&#9997</ref> '
             del noteSqlite
+        chapter += "{0}{1}</ref>".format(self.formChapterTag(b, c, text), self.bcvToVerseReference(b, c, v).split(":", 1)[0])
+        # get a verse list of available notes
+        noteVerseList = []
+        highlightDict = {}
+        if config.showNoteIndicatorOnBibleChapter:
+            noteVerseList = NoteService.getChapterVerseList(b, c)
+            if NoteService.isChapterNote(b, c):
+                chapter += ' <ref onclick="nC()">&#9997</ref>'.format(v)
+        if config.enableVerseHighlighting:
+            highlightDict = Highlight().getVerseDict(b, c)
         chapter += "</h2>"
         titleList = self.getVerseList(b, c, "title")
         verseList = self.readTextChapter(text, b, c)
@@ -741,11 +762,22 @@ input.addEventListener('keyup', function(event) {0}
                 if not v == 1:
                     chapter += "<br>"
                 chapter += "{0}<br>".format(self.readTextVerse("title", b, c, v)[3])
-            chapter += '{0}<vid id="v{1}.{2}.{3}" onclick="luV({3})" onmouseover="qV({3})" ondblclick="mV({3})">{3}</vid> '.format(divTag, b, c, v)
+            chapter += divTag
+            if config.enableVerseHighlighting and config.showHighlightMarkers:
+                chapter += '<ref onclick="hiV({0},{1},{2},\'hl1\')" class="ohl1">&#9678;</ref>'.format(b, c, v)
+                chapter += '<ref onclick="hiV({0},{1},{2},\'hl2\')" class="ohl2">&#9678;</ref>'.format(b, c, v)
+                chapter += '<ref onclick="hiV({0},{1},{2},\'ul1\')" class="oul1">&#9683;</ref>'.format(b, c, v)
+            chapter += '<vid id="v{0}.{1}.{2}" onclick="luV({2})" onmouseover="qV({2})" ondblclick="mV({2})">{2}</vid> '.format(b, c, v)
             # add note indicator
             if v in noteVerseList:
                 chapter += '<ref onclick="nV({0})">&#9997</ref> '.format(v)
-            chapter += "{0}</div>".format(verseText)
+            hlClass = ""
+            if v in highlightDict.keys():
+                hlClass = " class='{0}'".format(highlightDict[v])
+            chapter += "<span id='s{0}.{1}.{2}'{3}>".format(b, c, v, hlClass)
+            chapter += "{0}".format(verseText)
+            chapter += "</span>"
+            chapter += "</div>"
         return chapter
 
     def migrateDatabaseContent(self):
@@ -796,7 +828,26 @@ input.addEventListener('keyup', function(event) {0}
             else:
                 self.logger.debug("Verses table does not exist:" + name)
 
+    def adjustDarkThemeColorsForDiff(self, content):
+        content = content.replace("#e6ffe6", "#6b8e6b")
+        content = content.replace("#ffe6e6", "#555555")
+        return content
+
+
 class Bible:
+
+    CREATE_DETAILS_TABLE = '''CREATE TABLE IF NOT EXISTS Details (Title NVARCHAR(100), 
+                           Abbreviation NVARCHAR(50), Information TEXT, Version INT, OldTestament BOOL,
+                           NewTestament BOOL, Apocrypha BOOL, Strongs BOOL, Language NVARCHAR(10),
+                           FontSize NVARCHAR(20), FontName NVARCHAR(100))'''
+
+    CREATE_BIBLE_TABLE = "CREATE TABLE Bible (Book INT, Chapter INT, Scripture TEXT)"
+
+    CREATE_VERSES_TABLE = "CREATE TABLE IF NOT EXISTS Verses (Book INT, Chapter INT, Verse INT, Scripture TEXT)"
+
+    CREATE_NOTES_TABLE = "CREATE TABLE Notes (Book INT, Chapter INT, Verse INT, ID TEXT, Note TEXT)"
+
+    CREATE_COMMENTARY_TABLE = "CREATE TABLE Commentary (Book INT, Chapter INT, Scripture TEXT)"
 
     def __init__(self, text):
         # connect [text].bible
@@ -825,13 +876,43 @@ class Bible:
         return [verse[0] for verse in self.cursor.fetchall()]
 
     def bibleInfo(self):
-        query = "SELECT Title FROM Details limit 1"
+        # It is observed that some files have Details table and some do not.
+        try:
+            query = "SELECT Title FROM Details limit 1"
+            self.cursor.execute(query)
+            info = self.cursor.fetchone()
+        except:
+            try:
+                query = "SELECT Scripture FROM Verses WHERE Book=? AND Chapter=? AND Verse=? limit 1"
+                self.cursor.execute(query, (0, 0, 0))
+                info = self.cursor.fetchone()
+            except:
+                info = self.text
+        if info:
+            return info[0]
+        else:
+            return self.text
+
+    def getLanguage(self):
+        query = "SELECT Language FROM Details limit 1"
         self.cursor.execute(query)
         info = self.cursor.fetchone()
         if info:
             return info[0]
         else:
             return ""
+
+    def getFontInfo(self):
+        try:
+            query = "SELECT FontName, FontSize FROM Details limit 1"
+            self.cursor.execute(query)
+            info = self.cursor.fetchone()
+            if info:
+                return info
+            else:
+                return ("","")
+        except:
+            return ("", "")
 
     def bibleInfoOld(self):
         query = "SELECT Scripture FROM Verses WHERE Book=0 AND Chapter=0 AND Verse=0"
@@ -850,7 +931,7 @@ class Bible:
             delete = "DELETE from Verses"
             self.cursor.execute(delete)
         else:
-            create = "CREATE TABLE Verses (Book INT, Chapter INT, Verse INT, Scripture TEXT)"
+            create = Bible.CREATE_VERSES_TABLE
             self.cursor.execute(create)
         self.connection.commit()
         insert = "INSERT INTO Verses (Book, Chapter, Verse, Scripture) VALUES (?, ?, ?, ?)"
@@ -867,18 +948,28 @@ class Bible:
         return textChapter
 
     def readTextVerse(self, b, c, v):
-        query = "SELECT * FROM Verses WHERE Book=? AND Chapter=? AND Verse=?"
-        self.cursor.execute(query, (b, c, v))
-        textVerse = self.cursor.fetchone()
-        if not textVerse:
+        if self.checkTableExists("Verses"):
+            query = "SELECT * FROM Verses WHERE Book=? AND Chapter=? AND Verse=?"
+            self.cursor.execute(query, (b, c, v))
+            textVerse = self.cursor.fetchone()
+            if not textVerse:
+                return (b, c, v, "")
+            # return a tuple
+            return textVerse
+        else:
+            print("Verse table does not exist")
             return (b, c, v, "")
-        # return a tuple
-        return textVerse
 
     def readFormattedChapter(self, verse):
         b, c, v, *_ = verse
         biblesSqlite = BiblesSqlite()
-        chapter = "<h2>{0}{1}</ref>".format(biblesSqlite.formChapterTag(b, c, self.text), biblesSqlite.bcvToVerseReference(b, c, v).split(":", 1)[0])
+        chapter = "<h2>"
+        if config.showNoteIndicatorOnBibleChapter:
+            noteSqlite = NoteSqlite()
+            if noteSqlite.isBookNote(b):
+                chapter += '<ref onclick="nB()">&#9997</ref> '
+            del noteSqlite
+        chapter += "{0}{1}</ref>".format(biblesSqlite.formChapterTag(b, c, self.text), biblesSqlite.bcvToVerseReference(b, c, v).split(":", 1)[0])
         del biblesSqlite
         self.thisVerseNoteList = []
         if config.showNoteIndicatorOnBibleChapter:
@@ -892,11 +983,14 @@ class Bible:
         self.cursor.execute(query, verse[0:2])
         scripture = self.cursor.fetchone()
         if scripture:
-            chapter += re.sub('onclick="luV\(([0-9]+?)\)"(.*?>.*?</vid>)', self.formatVerseNumber, scripture[0])
+            chapter += re.sub(r'onclick="luV\(([0-9]+?)\)"(.*?>.*?</vid>)', self.formatVerseNumber, scripture[0])
             divTag = "<div>"
             if self.text in config.rtlTexts and b < 40:
                 divTag = "<div style='direction: rtl;'>"
-            return "{0}{1}</div>".format(divTag, chapter)
+            chapter = "{0}{1}</div>".format(divTag, chapter)
+            if config.enableVerseHighlighting:
+                chapter = Highlight().highlightChapter(b, c, chapter)
+            return chapter
         else:
             return "<span style='color:gray;'>['{0}' does not contain this chapter.]</span>".format(self.text)
 
@@ -943,22 +1037,67 @@ class Bible:
         else:
             return False
 
-    def createDetailsTable(self):
-        self.cursor.execute('''CREATE TABLE IF NOT EXISTS Details (Title NVARCHAR(100), 
-                               Abbreviation NVARCHAR(50), Information TEXT, Version INT, OldTestament BOOL,
-                               NewTestament BOOL, Apocrypha BOOL, Strongs BOOL)''')
+    def checkColumnExists(self, table, column):
+        self.cursor.execute("SELECT * FROM pragma_table_info(?) WHERE name=?", (table, column))
+        if self.cursor.fetchone():
+            return True
+        else:
+            return False
 
-    def insertDetailsTable(self, bibleFullname, bibleAbbrev):
-        sql = "INSERT INTO Details VALUES (?, ?, '', 1, 1, 1, 0, 1)"
-        self.cursor.execute(sql, (bibleFullname, bibleAbbrev))
+    def addColumnToTable(self, table, column, column_type):
+        sql = "ALTER TABLE " + table + " ADD COLUMN " + column + " " + column_type
+        self.cursor.execute(sql)
+
+    def addLanguageColumn(self):
+        self.addColumnToTable("Details", "Language", "NVARCHAR(10)")
+
+    def addFontNameColumn(self):
+        self.addColumnToTable("Details", "FontName", "NVARCHAR(100)")
+
+    def addFontSizeColumn(self):
+        self.addColumnToTable("Details", "FontSize", "NVARCHAR(20)")
+
+    def createDetailsTable(self):
+        self.cursor.execute(Bible.CREATE_DETAILS_TABLE)
+
+    def createVersesTable(self):
+        self.cursor.execute(Bible.CREATE_VERSES_TABLE)
+
+    def insertDetailsTable(self, bibleFullname, bibleAbbrev, language=''):
+        sql = ("INSERT INTO Details (Title, Abbreviation, Information, Version, OldTestament, NewTestament,"
+               "Apocrypha, Strongs, Language) VALUES (?, ?, '', 1, 1, 1, 0, 0, ?)")
+        self.cursor.execute(sql, (bibleFullname, bibleAbbrev, language))
 
     def updateDetailsTable(self, bibleFullname, bibleAbbrev):
         sql = "UPDATE Details set Title = ?, Abbreviation = ?"
         self.cursor.execute(sql, (bibleFullname, bibleAbbrev))
 
+    def updateTitleAndFontInfo(self, bibleFullname, fontSize, fontName):
+        sql = "UPDATE Details set Title = ?, FontSize = ?, FontName = ?"
+        self.cursor.execute(sql, (bibleFullname, fontSize, fontName))
+        self.connection.commit()
+
     def deleteOldBibleInfo(self):
         query = "DELETE FROM Verses WHERE Book=0 AND Chapter=0 AND Verse=0"
         self.cursor.execute(query)
+
+    def getCount(self, table):
+        self.cursor.execute('SELECT COUNT(*) from ' + table)
+        count = self.cursor.fetchone()[0]
+        return count
+
+    def addMissingColumns(self):
+        if not self.checkTableExists("Details"):
+            self.createDetailsTable()
+        if not self.checkColumnExists("Details", "Language"):
+            self.addLanguageColumn()
+        if not self.checkColumnExists("Details", "FontSize"):
+            self.addFontSizeColumn()
+        if not self.checkColumnExists("Details", "FontName"):
+            self.addFontNameColumn()
+        if self.getCount("Details") == 0:
+            self.insertDetailsTable(self.text, self.text)
+
 
 class ClauseData:
 
@@ -1075,6 +1214,20 @@ class MorphologySqlite:
         self.cursor.execute(query, t)
         return self.cursor.fetchone()
 
+    def distinctMorphology(self, lexicalEntry, item="Interlinear"):
+        query = "SELECT DISTINCT {0} FROM morphology WHERE LexicalEntry LIKE ?".format(item)
+        t = ("%{0},%".format(lexicalEntry),)
+        self.cursor.execute(query, t)
+        return list(set([self.simplifyTranslation(translation[0]) for translation in self.cursor.fetchall()]))
+
+    def simplifyTranslation(self, translation):
+        translation.strip()
+        translation = re.sub(r"^(.+?) \+\[[^\[\]]*?\]$", r"\1", translation)
+        translation = re.sub(r"^\+*\[[^\[\]]*?\](.+?)$", r"\1", translation)
+        translation = re.sub(r"^(.+?)\[[^\[\]]*?\]\+*$", r"\1", translation)
+        translation = re.sub(r"^[^A-Za-z]*?([A-Za-z].*?)[^A-Za-z]*?$", r"\1", translation)
+        return translation
+
     def searchMorphology(self, mode, searchString):
         formatedText = ""
         query = "SELECT * FROM morphology WHERE "
@@ -1106,8 +1259,21 @@ class MorphologySqlite:
         return formatedText
 
 
-#if __name__ == '__main__':
-    # Bibles = BiblesSqlite()
+
+if __name__ == '__main__':
+    from Languages import Languages
+
+    config.thisTranslation = Languages.translation
+    config.parserStandarisation = 'NO'
+    config.standardAbbreviation = 'ENG'
+    config.marvelData = "/Users/otseng/dev/UniqueBible/marvelData/"
+
+    Bibles = BiblesSqlite()
+
+    text = "John"
+    verses = BibleVerseParser(config.parserStandarisation).extractAllReferences(text)
+    result = Bibles.readMultipleVerses("KJV", verses)
+    print(result)
 
     # test search bible - BASIC
     # searchString = input("Search Bible [Basic]\nSearch for: ")

@@ -1,9 +1,12 @@
-import os, re, config, base64
-from PySide2.QtCore import Qt
-from PySide2.QtGui import QIcon, QTextCursor, QFont
-from PySide2.QtPrintSupport import QPrinter, QPrintDialog
-from PySide2.QtWidgets import (QInputDialog, QLineEdit, QMainWindow, QPushButton, QToolBar, QDialog, QFileDialog, QTextEdit, QFontDialog, QColorDialog)
-from NoteSqlite import NoteSqlite
+import os, re, config, base64, webbrowser
+from qtpy.QtCore import Qt
+from qtpy.QtGui import QIcon, QTextCursor, QFont, QGuiApplication
+from qtpy.QtPrintSupport import QPrinter, QPrintDialog
+from qtpy.QtWidgets import QMessageBox, QComboBox, QInputDialog, QLineEdit, QMainWindow, QPushButton, QToolBar, QDialog, QFileDialog, QTextEdit, QFontDialog, QColorDialog
+from util.NoteService import NoteService
+from TtsLanguages import TtsLanguages
+from Translator import Translator
+
 
 class NoteEditor(QMainWindow):
 
@@ -19,8 +22,6 @@ class NoteEditor(QMainWindow):
 
         # default - "Rich" mode for editing
         self.html = True
-        # default - show toolbar with formatting items
-        self.showToolBar = True
         # default - text is not modified; no need for saving new content
         self.parent.noteSaved = True
         config.noteOpened = True
@@ -33,10 +34,18 @@ class NoteEditor(QMainWindow):
         self.setupMenuBar()
         self.addToolBarBreak()
         self.setupToolBar()
+        if config.hideNoteEditorStyleToolbar:
+            self.toolBar.hide()
+        self.addToolBarBreak()
+        self.setupTextUtility()
+        if config.hideNoteEditorTextUtility:
+            self.ttsToolbar.hide()
+            self.translateToolbar.hide()
         self.setupLayout()
 
         # display content when first launched
         self.displayInitialContent()
+        self.editor.setFocus()
 
         # specify window title
         self.updateWindowTitle()
@@ -46,12 +55,22 @@ class NoteEditor(QMainWindow):
         if self.parent.noteSaved:
             config.noteOpened = False
             event.accept()
+            if config.lastOpenedNote and config.openBibleNoteAfterEditorClosed:
+                #if config.lastOpenedNote[0] == "file":
+                #    self.parent.externalFileButtonClicked()
+                if config.lastOpenedNote[0] == "book":
+                    self.parent.openStudyBookNote()
+                elif config.lastOpenedNote[0] == "chapter":
+                    self.parent.openStudyChapterNote()
+                elif config.lastOpenedNote[0] == "verse":
+                    self.parent.openStudyVerseNote()
         else:
             if self.parent.warningNotSaved():
                 self.parent.noteSaved = True
                 config.noteOpened = False
                 event.accept()
             else:
+                self.parent.bringToForeground(self)
                 event.ignore()
 
     # re-implement keyPressEvent, control+S for saving file
@@ -72,7 +91,7 @@ class NoteEditor(QMainWindow):
 
     # window appearance
     def resizeWindow(self, widthFactor, heightFactor):
-        availableGeometry = qApp.desktop().availableGeometry()
+        availableGeometry = QGuiApplication.instance().desktop().availableGeometry()
         self.resize(availableGeometry.width() * widthFactor, availableGeometry.height() * heightFactor)
 
     def updateWindowTitle(self):
@@ -83,7 +102,9 @@ class NoteEditor(QMainWindow):
                 title = "NEW"
         else:
             title = self.parent.bcvToVerseReference(self.b, self.c, self.v)
-            if self.noteType == "chapter":
+            if self.noteType == "book":
+                title, *_ = title.split(" ")            
+            elif self.noteType == "chapter":
                 title, *_ = title.split(":")
         mode = {True: "rich", False: "plain"}
         notModified = {True: "", False: " [modified]"}
@@ -188,6 +209,7 @@ class NoteEditor(QMainWindow):
 #        self.menuBar.addSeparator()
 
         self.searchLineEdit = QLineEdit()
+        self.searchLineEdit.setClearButtonEnabled(True)
         self.searchLineEdit.setToolTip(config.thisTranslation["menu5_search"])
         self.searchLineEdit.setMaximumWidth(400)
         self.searchLineEdit.returnPressed.connect(self.searchLineEntered)
@@ -199,7 +221,14 @@ class NoteEditor(QMainWindow):
         toolBarButton.setToolTip(config.thisTranslation["note_toolbar"])
         toolBarButtonFile = os.path.join("htmlResources", "toolbar.png")
         toolBarButton.setIcon(QIcon(toolBarButtonFile))
-        toolBarButton.clicked.connect(self.toogleToolbar)
+        toolBarButton.clicked.connect(self.toggleToolbar)
+        self.menuBar.addWidget(toolBarButton)
+
+        toolBarButton = QPushButton()
+        toolBarButton.setToolTip(config.thisTranslation["note_textUtility"])
+        toolBarButtonFile = os.path.join("htmlResources", "textUtility.png")
+        toolBarButton.setIcon(QIcon(toolBarButtonFile))
+        toolBarButton.clicked.connect(self.toggleTextUtility)
         self.menuBar.addWidget(toolBarButton)
 
         self.menuBar.addSeparator()
@@ -256,17 +285,30 @@ class NoteEditor(QMainWindow):
         self.menuBar.addSeparator()
 
         iconFile = os.path.join("htmlResources", "toolbar.png")
-        self.menuBar.addAction(QIcon(iconFile), config.thisTranslation["note_toolbar"], self.toogleToolbar)
+        self.menuBar.addAction(QIcon(iconFile), config.thisTranslation["note_toolbar"], self.toggleToolbar)
+
+        iconFile = os.path.join("htmlResources", "textUtility.png")
+        self.menuBar.addAction(QIcon(iconFile), config.thisTranslation["note_textUtility"], self.toggleTextUtility)
 
         self.menuBar.addSeparator()
 
-    def toogleToolbar(self):
-        if self.showToolBar:
-            self.toolBar.hide()
-            self.showToolBar = False
-        else:
+    def toggleToolbar(self):
+        if config.hideNoteEditorStyleToolbar:
             self.toolBar.show()
-            self.showToolBar = True
+            config.hideNoteEditorStyleToolbar = False
+        else:
+            self.toolBar.hide()
+            config.hideNoteEditorStyleToolbar = True
+
+    def toggleTextUtility(self):
+        if config.hideNoteEditorTextUtility:
+            self.ttsToolbar.show()
+            self.translateToolbar.show()
+            config.hideNoteEditorTextUtility = False
+        else:
+            self.ttsToolbar.hide()
+            self.translateToolbar.hide()
+            config.hideNoteEditorTextUtility = True
 
     def printNote(self):
         #document = QTextDocument("Sample Page")
@@ -291,153 +333,87 @@ class NoteEditor(QMainWindow):
         # self.toolBar can be treated as an individual widget and positioned with a specified layout
         # In QMainWindow, the following line adds the configured QToolBar as part of the toolbar of the main window
         self.addToolBar(self.toolBar)
-
-        fontButton = QPushButton()
-        fontButton.setToolTip(config.thisTranslation["noteTool_textFont"])
-        fontButtonFile = os.path.join("htmlResources", "font.png")
-        fontButton.setIcon(QIcon(fontButtonFile))
-        fontButton.clicked.connect(self.format_font)
-        self.toolBar.addWidget(fontButton)
-
-        fontButton = QPushButton()
-        fontButton.setToolTip(config.thisTranslation["noteTool_textColor"])
-        fontButtonFile = os.path.join("htmlResources", "textColor.png")
-        fontButton.setIcon(QIcon(fontButtonFile))
-        fontButton.clicked.connect(self.format_textColor)
-        self.toolBar.addWidget(fontButton)
-
-        fontButton = QPushButton()
-        fontButton.setToolTip(config.thisTranslation["noteTool_textBackgroundColor"])
-        fontButtonFile = os.path.join("htmlResources", "textBgColor.png")
-        fontButton.setIcon(QIcon(fontButtonFile))
-        fontButton.clicked.connect(self.format_textBackgroundColor)
-        self.toolBar.addWidget(fontButton)
+        
+        items = (
+            ("noteTool_textFont", "font.png", self.format_font),
+            ("noteTool_textColor", "textColor.png", self.format_textColor),
+            ("noteTool_textBackgroundColor", "textBgColor.png", self.format_textBackgroundColor),
+        )
+        for item in items:
+            toolTip, icon, action = item
+            self.parent.addStandardIconButton(toolTip, icon, action, self.toolBar)
 
         self.toolBar.addSeparator()
 
-        headerButton = QPushButton()
-        headerButton.setToolTip(config.thisTranslation["noteTool_header1"])
-        headerButtonFile = os.path.join("htmlResources", "header1.png")
-        headerButton.setIcon(QIcon(headerButtonFile))
-        headerButton.clicked.connect(self.format_header1)
-        self.toolBar.addWidget(headerButton)
-
-        headerButton = QPushButton()
-        headerButton.setToolTip(config.thisTranslation["noteTool_header2"])
-        headerButtonFile = os.path.join("htmlResources", "header2.png")
-        headerButton.setIcon(QIcon(headerButtonFile))
-        headerButton.clicked.connect(self.format_header2)
-        self.toolBar.addWidget(headerButton)
-
-        headerButton = QPushButton()
-        headerButton.setToolTip(config.thisTranslation["noteTool_header3"])
-        headerButtonFile = os.path.join("htmlResources", "header3.png")
-        headerButton.setIcon(QIcon(headerButtonFile))
-        headerButton.clicked.connect(self.format_header3)
-        self.toolBar.addWidget(headerButton)
+        items = (
+            ("noteTool_header1", "header1.png", self.format_header1),
+            ("noteTool_header2", "header2.png", self.format_header2),
+            ("noteTool_header3", "header3.png", self.format_header3),
+        )
+        for item in items:
+            toolTip, icon, action = item
+            self.parent.addStandardIconButton(toolTip, icon, action, self.toolBar)
 
         self.toolBar.addSeparator()
         
-        boldButton = QPushButton()
-        boldButton.setToolTip("{0}\n[Ctrl/Cmd + B]".format(config.thisTranslation["noteTool_bold"]))
-        boldButtonFile = os.path.join("htmlResources", "bold.png")
-        boldButton.setIcon(QIcon(boldButtonFile))
-        boldButton.clicked.connect(self.format_bold)
-        self.toolBar.addWidget(boldButton)
-
-        italicButton = QPushButton()
-        italicButton.setToolTip("{0}\n[Ctrl/Cmd + I]".format(config.thisTranslation["noteTool_italic"]))
-        italicButtonFile = os.path.join("htmlResources", "italic.png")
-        italicButton.setIcon(QIcon(italicButtonFile))
-        italicButton.clicked.connect(self.format_italic)
-        self.toolBar.addWidget(italicButton)
-
-        underlineButton = QPushButton()
-        underlineButton.setToolTip("{0}\n[Ctrl/Cmd + U]".format(config.thisTranslation["noteTool_underline"]))
-        underlineButtonFile = os.path.join("htmlResources", "underline.png")
-        underlineButton.setIcon(QIcon(underlineButtonFile))
-        underlineButton.clicked.connect(self.format_underline)
-        self.toolBar.addWidget(underlineButton)
+        items = (
+            ("{0}\n[Ctrl/Cmd + B]".format(config.thisTranslation["noteTool_bold"]), "bold.png", self.format_bold),
+            ("{0}\n[Ctrl/Cmd + I]".format(config.thisTranslation["noteTool_italic"]), "italic.png", self.format_italic),
+            ("{0}\n[Ctrl/Cmd + U]".format(config.thisTranslation["noteTool_underline"]), "underline.png", self.format_underline),
+        )
+        for item in items:
+            toolTip, icon, action = item
+            self.parent.addStandardIconButton(toolTip, icon, action, self.toolBar, translation=False)
 
         self.toolBar.addSeparator()
 
-        customButton = QPushButton()
-        customButton.setToolTip("{0}\n[Ctrl/Cmd + M]\n\n{1}\n* {4}\n* {5}\n* {6}\n\n{2}\n*1 {4}\n*2 {5}\n*3 {6}\n\n{3}\n{10}{4}|{5}|{6}{11}\n{10}{7}|{8}|{9}{11}".format(config.thisTranslation["noteTool_trans0"], config.thisTranslation["noteTool_trans1"], config.thisTranslation["noteTool_trans2"], config.thisTranslation["noteTool_trans3"], config.thisTranslation["noteTool_no1"], config.thisTranslation["noteTool_no2"], config.thisTranslation["noteTool_no3"], config.thisTranslation["noteTool_no4"], config.thisTranslation["noteTool_no5"], config.thisTranslation["noteTool_no6"], "{", "}"))
-        customButtonFile = os.path.join("htmlResources", "custom.png")
-        customButton.setIcon(QIcon(customButtonFile))
-        customButton.clicked.connect(self.format_custom)
-        self.toolBar.addWidget(customButton)
+        items = (
+            ("noteTool_superscript", "superscript.png", self.format_superscript),
+            ("noteTool_subscript", "subscript.png", self.format_subscript),
+        )
+        for item in items:
+            toolTip, icon, action = item
+            self.parent.addStandardIconButton(toolTip, icon, action, self.toolBar)
 
         self.toolBar.addSeparator()
 
-        leftButton = QPushButton()
-        leftButton.setToolTip(config.thisTranslation["noteTool_left"])
-        leftButtonFile = os.path.join("htmlResources", "align_left.png")
-        leftButton.setIcon(QIcon(leftButtonFile))
-        leftButton.clicked.connect(self.format_left)
-        self.toolBar.addWidget(leftButton)
-
-        centerButton = QPushButton()
-        centerButton.setToolTip(config.thisTranslation["noteTool_centre"])
-        centerButtonFile = os.path.join("htmlResources", "align_center.png")
-        centerButton.setIcon(QIcon(centerButtonFile))
-        centerButton.clicked.connect(self.format_center)
-        self.toolBar.addWidget(centerButton)
-
-        rightButton = QPushButton()
-        rightButton.setToolTip(config.thisTranslation["noteTool_right"])
-        rightButtonFile = os.path.join("htmlResources", "align_right.png")
-        rightButton.setIcon(QIcon(rightButtonFile))
-        rightButton.clicked.connect(self.format_right)
-        self.toolBar.addWidget(rightButton)
-
-        justifyButton = QPushButton()
-        justifyButton.setToolTip(config.thisTranslation["noteTool_justify"])
-        justifyButtonFile = os.path.join("htmlResources", "align_justify.png")
-        justifyButton.setIcon(QIcon(justifyButtonFile))
-        justifyButton.clicked.connect(self.format_justify)
-        self.toolBar.addWidget(justifyButton)
+        self.parent.addStandardIconButton("{0}\n[Ctrl/Cmd + M]\n\n{1}\n* {4}\n* {5}\n* {6}\n\n{2}\n*1 {4}\n*2 {5}\n*3 {6}\n\n{3}\n{10}{4}|{5}|{6}{11}\n{10}{7}|{8}|{9}{11}".format(config.thisTranslation["noteTool_trans0"], config.thisTranslation["noteTool_trans1"], config.thisTranslation["noteTool_trans2"], config.thisTranslation["noteTool_trans3"], config.thisTranslation["noteTool_no1"], config.thisTranslation["noteTool_no2"], config.thisTranslation["noteTool_no3"], config.thisTranslation["noteTool_no4"], config.thisTranslation["noteTool_no5"], config.thisTranslation["noteTool_no6"], "{", "}"), "custom.png", self.format_custom, self.toolBar, translation=False)
 
         self.toolBar.addSeparator()
 
-        clearButton = QPushButton()
-        clearButton.setToolTip("{0}\n[Ctrl/Cmd + D]".format(config.thisTranslation["noteTool_delete"]))
-        clearButtonFile = os.path.join("htmlResources", "clearFormat.png")
-        clearButton.setIcon(QIcon(clearButtonFile))
-        clearButton.clicked.connect(self.format_clear)
-        self.toolBar.addWidget(clearButton)
+        items = (
+            ("noteTool_left", "align_left.png", self.format_left),
+            ("noteTool_centre", "align_center.png", self.format_center),
+            ("noteTool_right", "align_right.png", self.format_right),
+            ("noteTool_justify", "align_justify.png", self.format_justify),
+        )
+        for item in items:
+            toolTip, icon, action = item
+            self.parent.addStandardIconButton(toolTip, icon, action, self.toolBar)
 
         self.toolBar.addSeparator()
 
-        hyperlinkButton = QPushButton()
-        hyperlinkButton.setToolTip(config.thisTranslation["noteTool_hyperlink"])
-        hyperlinkButtonFile = os.path.join("htmlResources", "hyperlink.png")
-        hyperlinkButton.setIcon(QIcon(hyperlinkButtonFile))
-        hyperlinkButton.clicked.connect(self.openHyperlinkDialog)
-        self.toolBar.addWidget(hyperlinkButton)
-
-        imageButton = QPushButton()
-        imageButton.setToolTip(config.thisTranslation["noteTool_externalImage"])
-        imageButtonFile = os.path.join("htmlResources", "gallery.png")
-        imageButton.setIcon(QIcon(imageButtonFile))
-        imageButton.clicked.connect(self.openImageDialog)
-        self.toolBar.addWidget(imageButton)
+        self.parent.addStandardIconButton("{0}\n[Ctrl/Cmd + D]".format(config.thisTranslation["noteTool_delete"]), "clearFormat.png", self.format_clear, self.toolBar, translation=False)
 
         self.toolBar.addSeparator()
 
-        imageButton = QPushButton()
-        imageButton.setToolTip(config.thisTranslation["noteTool_image"])
-        imageButtonFile = os.path.join("htmlResources", "addImage.png")
-        imageButton.setIcon(QIcon(imageButtonFile))
-        imageButton.clicked.connect(self.addInternalImage)
-        self.toolBar.addWidget(imageButton)
+        items = (
+            ("noteTool_hyperlink", "hyperlink.png", self.openHyperlinkDialog),
+            ("noteTool_externalImage", "gallery.png", self.openImageDialog),
+        )
+        for item in items:
+            toolTip, icon, action = item
+            self.parent.addStandardIconButton(toolTip, icon, action, self.toolBar)
 
-        imageButton = QPushButton()
-        imageButton.setToolTip(config.thisTranslation["noteTool_exportImage"])
-        imageButtonFile = os.path.join("htmlResources", "export.png")
-        imageButton.setIcon(QIcon(imageButtonFile))
-        imageButton.clicked.connect(self.exportNoteImages)
-        self.toolBar.addWidget(imageButton)
+        self.toolBar.addSeparator()
+
+        items = (
+            ("noteTool_image", "addImage.png", self.addInternalImage),
+            ("noteTool_exportImage", "export.png", self.exportNoteImages),
+        )
+        for item in items:
+            toolTip, icon, action = item
+            self.parent.addStandardIconButton(toolTip, icon, action, self.toolBar)
 
         self.toolBar.addSeparator()
 
@@ -524,7 +500,7 @@ class NoteEditor(QMainWindow):
         self.toolBar.addSeparator()
 
     def setupLayout(self):
-        self.editor = QTextEdit()        
+        self.editor = QTextEdit()  
         self.editor.setStyleSheet("font-family:'{0}'; font-size:{1}pt;".format(config.font, config.fontSize));
         self.editor.textChanged.connect(self.textChanged)
         self.setCentralWidget(self.editor)
@@ -597,12 +573,12 @@ p, li {0} white-space: pre-wrap; {1}
 
     # load chapter / verse notes from sqlite database
     def openBibleNote(self):
-        noteSqlite = NoteSqlite()
-        if self.noteType == "chapter":
-            note = noteSqlite.getChapterNote((self.b, self.c))
+        if self.noteType == "book":
+            note = NoteService.getBookNote(self.b)
+        elif self.noteType == "chapter":
+            note = NoteService.getChapterNote(self.b, self.c)
         elif self.noteType == "verse":
-            note = noteSqlite.getVerseNote((self.b, self.c, self.v))
-        del noteSqlite
+            note = NoteService.getVerseNote(self.b, self.c, self.v)
         if note == config.thisTranslation["empty"]:
             note = self.getEmptyPage()
         else:
@@ -673,18 +649,20 @@ p, li {0} white-space: pre-wrap; {1}
         else:
             note = self.editor.toPlainText()
         note = self.fixNoteFont(note)
-        if self.noteType == "chapter":
-            noteSqlite = NoteSqlite()
-            noteSqlite.saveChapterNote((self.b, self.c, note))
-            del noteSqlite
+        if self.noteType == "book":
+            NoteService.saveBookNote(self.b, note)
+            if config.openBibleNoteAfterSave:
+                self.parent.openBookNote(self.b,)
+            self.parent.noteSaved = True
+            self.updateWindowTitle()
+        elif self.noteType == "chapter":
+            NoteService.saveChapterNote(self.b, self.c, note)
             if config.openBibleNoteAfterSave:
                 self.parent.openChapterNote(self.b, self.c)
             self.parent.noteSaved = True
             self.updateWindowTitle()
         elif self.noteType == "verse":
-            noteSqlite = NoteSqlite()
-            noteSqlite.saveVerseNote((self.b, self.c, self.v, note))
-            del noteSqlite
+            NoteService.saveVerseNote(self.b, self.c, self.v, note)
             if config.openBibleNoteAfterSave:
                 self.parent.openVerseNote(self.b, self.c, self.v)
             self.parent.noteSaved = True
@@ -729,132 +707,210 @@ p, li {0} white-space: pre-wrap; {1}
     # formatting styles
     def format_clear(self):
         selectedText = self.editor.textCursor().selectedText()
-        if self.html:
-            selectedText = """<span style="font-family:'{0}'; font-size:{1}pt;">{2}</span>""".format(config.font, config.fontSize, selectedText)
-            self.editor.insertHtml(selectedText)
+        if selectedText:
+            if self.html:
+                selectedText = """<span style="font-family:'{0}'; font-size:{1}pt;">{2}</span>""".format(config.font, config.fontSize, selectedText)
+                self.editor.insertHtml(selectedText)
+            else:
+                selectedText = re.sub("<[^\n<>]*?>", "", selectedText)
+                self.editor.insertPlainText(selectedText)
         else:
-            selectedText = re.sub("<[^\n<>]*?>", "", selectedText)
-            self.editor.insertPlainText(selectedText)
+            self.selectTextFirst()
 
     def format_header1(self):
-        if self.html:
-            self.editor.insertHtml("<h1>{0}</h1>".format(self.editor.textCursor().selectedText()))
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            if self.html:
+                self.editor.insertHtml("<h1>{0}</h1>".format(selectedText))
+            else:
+                self.editor.insertPlainText("<h1>{0}</h1>".format(selectedText))
         else:
-            self.editor.insertPlainText("<h1>{0}</h1>".format(self.editor.textCursor().selectedText()))
+            self.selectTextFirst()
 
     def format_header2(self):
-        if self.html:
-            self.editor.insertHtml("<h2>{0}</h2>".format(self.editor.textCursor().selectedText()))
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            if self.html:
+                self.editor.insertHtml("<h2>{0}</h2>".format(selectedText))
+            else:
+                self.editor.insertPlainText("<h2>{0}</h2>".format(selectedText))
         else:
-            self.editor.insertPlainText("<h2>{0}</h2>".format(self.editor.textCursor().selectedText()))
+            self.selectTextFirst()
 
     def format_header3(self):
-        if self.html:
-            self.editor.insertHtml("<h3>{0}</h3>".format(self.editor.textCursor().selectedText()))
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            if self.html:
+                self.editor.insertHtml("<h3>{0}</h3>".format(selectedText))
+            else:
+                self.editor.insertPlainText("<h3>{0}</h3>".format(selectedText))
         else:
-            self.editor.insertPlainText("<h3>{0}</h3>".format(self.editor.textCursor().selectedText()))
+            self.selectTextFirst()
 
     def format_font(self):
-        ok, font = QFontDialog.getFont(QFont(config.font, config.fontSize), self)
-        if ok:
-            if self.html:
-                self.editor.setCurrentFont(font)
-            else:
-                fontFamily, fontSize, i1, i2, fontWeight, italic, underline, strikeout, *_ = font.key().split(",")
-                spanTag = """<span style="font-family:'{0}'; font-size:{1}pt;""".format(fontFamily, fontSize)
-                # add font weight
-                if fontWeight == "25":
-                    spanTag += " font-weight:200;"
-                elif fontWeight == "75":
-                    spanTag += " font-weight:600;"
-                # add italic style
-                if italic == "1":
-                    spanTag += " font-style:italic;"
-                # add both underline and strikeout style
-                if underline == "1" and strikeout == "1":
-                    spanTag += " text-decoration: underline line-through;"
-                # add underline style
-                elif underline == "1":
-                    spanTag += " text-decoration: underline;"
-                # add strikeout style
-                elif strikeout == "1":
-                    spanTag += " text-decoration: line-through;"
-                # close tag
-                spanTag += '">'
-                self.editor.insertPlainText("{0}{1}</span>".format(spanTag, self.editor.textCursor().selectedText()))
-
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            ok, font = QFontDialog.getFont(QFont(config.font, config.fontSize), self)
+            if ok:
+                if self.html:
+                    self.editor.setCurrentFont(font)
+                else:
+                    fontFamily, fontSize, i1, i2, fontWeight, italic, underline, strikeout, *_ = font.key().split(",")
+                    spanTag = """<span style="font-family:'{0}'; font-size:{1}pt;""".format(fontFamily, fontSize)
+                    # add font weight
+                    if fontWeight == "25":
+                        spanTag += " font-weight:200;"
+                    elif fontWeight == "75":
+                        spanTag += " font-weight:600;"
+                    # add italic style
+                    if italic == "1":
+                        spanTag += " font-style:italic;"
+                    # add both underline and strikeout style
+                    if underline == "1" and strikeout == "1":
+                        spanTag += " text-decoration: underline line-through;"
+                    # add underline style
+                    elif underline == "1":
+                        spanTag += " text-decoration: underline;"
+                    # add strikeout style
+                    elif strikeout == "1":
+                        spanTag += " text-decoration: line-through;"
+                    # close tag
+                    spanTag += '">'
+                    self.editor.insertPlainText("{0}{1}</span>".format(spanTag, selectedText))
+        else:
+            self.selectTextFirst()
+        
     def format_textColor(self):
-        color = QColorDialog.getColor(Qt.darkRed, self)
-        if color.isValid():
-            if self.html:
-                self.editor.setTextColor(color)
-            else:
-                self.editor.insertPlainText('<span style="color:{0};">{1}</span>'.format(color.name(), self.editor.textCursor().selectedText()))
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            color = QColorDialog.getColor(Qt.darkRed, self)
+            if color.isValid():
+                if self.html:
+                    self.editor.setTextColor(color)
+                else:
+                    self.editor.insertPlainText('<span style="color:{0};">{1}</span>'.format(color.name(), self.editor.textCursor().selectedText()))
+        else:
+            self.selectTextFirst()
 
     def format_textBackgroundColor(self):
-        color = QColorDialog.getColor(Qt.yellow, self)
-        if color.isValid():
-            if self.html:
-                self.editor.setTextBackgroundColor(color)
-            else:
-                self.editor.insertPlainText('<span style="background-color:{0};">{1}</span>'.format(color.name(), self.editor.textCursor().selectedText()))
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            color = QColorDialog.getColor(Qt.yellow, self)
+            if color.isValid():
+                if self.html:
+                    self.editor.setTextBackgroundColor(color)
+                else:
+                    self.editor.insertPlainText('<span style="background-color:{0};">{1}</span>'.format(color.name(), selectedText))
+        else:
+            self.selectTextFirst()
 
     def format_bold(self):
-        if self.html:
-            # Reference: https://doc.qt.io/qt-5/qfont.html#Weight-enum
-            # Bold = 75
-            self.editor.setFontWeight(75)
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            if self.html:
+                # Reference: https://doc.qt.io/qt-5/qfont.html#Weight-enum
+                # Bold = 75
+                self.editor.setFontWeight(75)
+            else:
+                self.editor.insertPlainText("<b>{0}</b>".format(selectedText))
         else:
-            self.editor.insertPlainText("<b>{0}</b>".format(self.editor.textCursor().selectedText()))
+            self.selectTextFirst()
 
     def format_italic(self):
-        if self.html:
-            self.editor.setFontItalic(True)
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            if self.html:
+                self.editor.setFontItalic(True)
+            else:
+                self.editor.insertPlainText("<i>{0}</i>".format(selectedText))
         else:
-            self.editor.insertPlainText("<i>{0}</i>".format(self.editor.textCursor().selectedText()))
+            self.selectTextFirst()
 
     def format_underline(self):
-        if self.html:
-            self.editor.setFontUnderline(True)
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            if self.html:
+                self.editor.setFontUnderline(True)
+            else:
+                self.editor.insertPlainText("<u>{0}</u>".format(selectedText))
         else:
-            self.editor.insertPlainText("<u>{0}</u>".format(self.editor.textCursor().selectedText()))
+            self.selectTextFirst()
+
+    def format_superscript(self):
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            if self.html:
+                self.editor.insertHtml("<sup>{0}</sup>".format(selectedText))
+            else:
+                self.editor.insertPlainText("<sup>{0}</sup>".format(selectedText))
+        else:
+            self.selectTextFirst()
+
+    def format_subscript(self):
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            if self.html:
+                self.editor.insertHtml("<sub>{0}</sub>".format(selectedText))
+            else:
+                self.editor.insertPlainText("<sub>{0}</sub>".format(selectedText))
+        else:
+            self.selectTextFirst()
 
     def format_center(self):
-        if self.html:
-            self.editor.setAlignment(Qt.AlignCenter)
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            if self.html:
+                self.editor.setAlignment(Qt.AlignCenter)
+            else:
+                self.editor.insertPlainText("<div style='text-align:center;'>{0}</div>".format(selectedText))
         else:
-            self.editor.insertPlainText("<div style='text-align:center;'>{0}</div>".format(self.editor.textCursor().selectedText()))
+            self.selectTextFirst()
 
     def format_justify(self):
-        if self.html:
-            self.editor.setAlignment(Qt.AlignJustify)
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            if self.html:
+                self.editor.setAlignment(Qt.AlignJustify)
+            else:
+                self.editor.insertPlainText("<div style='text-align:justify;'>{0}</div>".format(selectedText))
         else:
-            self.editor.insertPlainText("<div style='text-align:justify;'>{0}</div>".format(self.editor.textCursor().selectedText()))
+            self.selectTextFirst()
 
     def format_left(self):
-        if self.html:
-            self.editor.setAlignment(Qt.AlignLeft)
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            if self.html:
+                self.editor.setAlignment(Qt.AlignLeft)
+            else:
+                self.editor.insertPlainText("<div style='text-align:left;'>{0}</div>".format(selectedText))
         else:
-            self.editor.insertPlainText("<div style='text-align:left;'>{0}</div>".format(self.editor.textCursor().selectedText()))
+            self.selectTextFirst()
 
     def format_right(self):
-        if self.html:
-            self.editor.setAlignment(Qt.AlignRight)
+        selectedText = self.editor.textCursor().selectedText()
+        if selectedText:
+            if self.html:
+                self.editor.setAlignment(Qt.AlignRight)
+            else:
+                self.editor.insertPlainText("<div style='text-align:right;'>{0}</div>".format(selectedText))
         else:
-            self.editor.insertPlainText("<div style='text-align:right;'>{0}</div>".format(self.editor.textCursor().selectedText()))
+            self.selectTextFirst()
 
     def format_custom(self):
         selectedText = self.editor.textCursor().selectedText()
-        selectedText = self.customFormat(selectedText)
-        if self.html:
-            self.editor.insertHtml(selectedText)
+        if selectedText:
+            selectedText = self.customFormat(selectedText)
+            if self.html:
+                self.editor.insertHtml(selectedText)
+            else:
+                self.editor.insertPlainText(selectedText)
         else:
-            self.editor.insertPlainText(selectedText)
+            self.selectTextFirst()
 
     def customFormat(self, text):
-        # QTextEdit's line break character by pressing ENTER in plain & html mode ""
-        # please note that "" is not an empty string
-        text = text.replace("", "\n")
+        # QTextEdit's line break character by pressing ENTER in plain & html mode " "
+        # please note that " " is not an empty string
+        text = text.replace(" ", "\n")
 
         text = re.sub("^\*[0-9]+? (.*?)$", r"<ol><li>\1</li></ol>", text, flags=re.M)
         text = text.replace("</ol>\n<ol>", "\n")
@@ -869,7 +925,7 @@ p, li {0} white-space: pre-wrap; {1}
         text = text.replace('<table>', '<table border="1" cellpadding="5">')
 
         # convert back to QTextEdit linebreak
-        text = text.replace("\n", "")
+        text = text.replace("\n", " ")
 
         # wrap with default font and font-size
         text = """<span style="font-family:'{0}'; font-size:{1}pt;">{2}</span>""".format(config.font, config.fontSize, text)
@@ -933,22 +989,110 @@ p, li {0} white-space: pre-wrap; {1}
         else:
             self.editor.insertPlainText(imageTag)
 
-    def addHyperlink(self, hyperlink):
-        hyperlink = '<a href="{0}">{1}</a>'.format(hyperlink, self.editor.textCursor().selectedText())
-        hyperlink = """<span style="font-family:'{0}'; font-size:{1}pt;">{2}</span>""".format(config.font, config.fontSize, hyperlink)
-        if self.html:
-            self.editor.insertHtml(hyperlink)
-        else:
-            self.editor.insertPlainText(hyperlink)
-
     def openHyperlinkDialog(self):
         selectedText = self.editor.textCursor().selectedText()
         if selectedText:
-            hyperlink = selectedText
+            text, ok = QInputDialog.getText(self, "UniqueBible.app",
+                    config.thisTranslation["noteTool_hyperlink"], QLineEdit.Normal,
+                    selectedText)
+            if ok and text != '':
+                hyperlink = '<a href="{0}">{1}</a>'.format(text, selectedText)
+                hyperlink = """<span style="font-family:'{0}'; font-size:{1}pt;">{2}</span>""".format(config.font, config.fontSize, hyperlink)
+                if self.html:
+                    self.editor.insertHtml(hyperlink)
+                else:
+                    self.editor.insertPlainText(hyperlink)
         else:
-            hyperlink = "https://BibleTools.app"
-        text, ok = QInputDialog.getText(self, "UniqueBible.app",
-                config.thisTranslation["noteTool_hyperlink"], QLineEdit.Normal,
-                hyperlink)
-        if ok and text != '':
-            self.addHyperlink(text)
+            self.selectTextFirst()
+
+    def setupTextUtility(self):
+
+        self.ttsToolbar = QToolBar()
+        self.ttsToolbar.setWindowTitle(config.thisTranslation["noteTool_title"])
+        self.ttsToolbar.setContextMenuPolicy(Qt.PreventContextMenu)
+        # self.toolBar can be treated as an individual widget and positioned with a specified layout
+        # In QMainWindow, the following line adds the configured QToolBar as part of the toolbar of the main window
+        self.addToolBar(self.ttsToolbar)
+
+        self.languageCombo = QComboBox()
+        self.ttsToolbar.addWidget(self.languageCombo)
+        if config.espeak:
+            languages = TtsLanguages().isoLang2epeakLang
+        else:
+            languages = TtsLanguages().isoLang2qlocaleLang
+        self.languageCodes = list(languages.keys())
+        for code in self.languageCodes:
+            self.languageCombo.addItem(languages[code][1])
+        # Check if selected tts engine has the language user specify.
+        if not (config.ttsDefaultLangauge in self.languageCodes):
+            config.ttsDefaultLangauge = "en"
+        # Set initial item
+        initialIndex = self.languageCodes.index(config.ttsDefaultLangauge)
+        self.languageCombo.setCurrentIndex(initialIndex)
+
+        button = QPushButton(config.thisTranslation["speak"])
+        button.setToolTip(config.thisTranslation["speak"])
+        button.clicked.connect(self.speakText)
+        self.ttsToolbar.addWidget(button)
+        button = QPushButton(config.thisTranslation["stop"])
+        button.setToolTip(config.thisTranslation["stop"])
+        button.clicked.connect(self.parent.textCommandParser.stopTtsAudio)
+        self.ttsToolbar.addWidget(button)
+
+        self.translateToolbar = QToolBar()
+        self.translateToolbar.setWindowTitle(config.thisTranslation["noteTool_title"])
+        self.translateToolbar.setContextMenuPolicy(Qt.PreventContextMenu)
+        # self.toolBar can be treated as an individual widget and positioned with a specified layout
+        # In QMainWindow, the following line adds the configured QToolBar as part of the toolbar of the main window
+        self.addToolBar(self.translateToolbar)
+
+        self.fromLanguageCombo = QComboBox()
+        self.translateToolbar.addWidget(self.fromLanguageCombo)
+        self.fromLanguageCombo.addItems(["[Auto]"] +Translator.fromLanguageNames)
+        initialIndex = 0
+        self.fromLanguageCombo.setCurrentIndex(initialIndex)
+
+        button = QPushButton(config.thisTranslation["context1_translate"])
+        button.setToolTip(config.thisTranslation["context1_translate"])
+        button.clicked.connect(self.translateText)
+        self.translateToolbar.addWidget(button)
+
+        self.toLanguageCombo = QComboBox()
+        self.translateToolbar.addWidget(self.toLanguageCombo)
+        self.toLanguageCombo.addItems(Translator.toLanguageNames)
+        initialIndex = Translator.toLanguageNames.index(config.userLanguage)
+        self.toLanguageCombo.setCurrentIndex(initialIndex)
+
+    def speakText(self):
+        text = self.editor.textCursor().selectedText()
+        if text:
+            if config.isTtsInstalled:
+                if ":::" in text:
+                    text = text.split(":::")[-1]
+                command = "SPEAK:::{0}:::{1}".format(self.languageCodes[self.languageCombo.currentIndex()], text)
+                self.parent.runTextCommand(command)
+            else:
+                self.displayMessage(config.thisTranslation["message_noSupport"])
+        else:
+            self.selectTextFirst()
+
+    def translateText(self):
+        text = self.editor.textCursor().selectedText()
+        if text:
+            translator = Translator()
+            if translator.language_translator is not None:
+                fromLanguage = Translator.fromLanguageCodes[self.fromLanguageCombo.currentIndex() - 1] if self.fromLanguageCombo.currentIndex() != 0 else translator.identify(text)
+                toLanguage = Translator.toLanguageCodes[self.toLanguageCombo.currentIndex()]
+                result = translator.translate(text, fromLanguage, toLanguage)
+                self.editor.insertPlainText(result)
+            else:
+                self.displayMessage(config.thisTranslation["ibmWatsonNotEnalbed"])
+                webbrowser.open("https://github.com/eliranwong/UniqueBible/wiki/IBM-Watson-Language-Translator")
+        else:
+            self.selectTextFirst()
+
+    def selectTextFirst(self):
+        self.displayMessage(config.thisTranslation["selectTextFirst"])
+
+    def displayMessage(self, message="", title="UniqueBible"):
+        reply = QMessageBox.information(self, title, message)

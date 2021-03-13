@@ -1,25 +1,39 @@
 # UniqueBible
 A cross-platform & offline bible application, integrated with high-quality resources and unique features.
 
-<b>Tested in:</b> Windows, macOS and Linux (Debian, Ubuntu & Mint)
-
-Our Wiki Pages: https://github.com/eliranwong/UniqueBible/wiki
+<b>Tested in:</b> <a href="https://github.com/eliranwong/UniqueBible/wiki/Install-on-Windows">Windows 10</a>, <a href="https://github.com/eliranwong/wsl2/blob/master/bible_apps/desktop.md">Windows WSL2</a>, <a href="https://github.com/eliranwong/UniqueBible/wiki/Install-on-macOS">macOS [Sierra+]</a> and <a href="https://github.com/eliranwong/UniqueBible/wiki/Install-on-Linux">Linux</a> (Debian, Ubuntu & Mint), <a href="https://github.com/eliranwong/UniqueBible/wiki/Install-on-Chrome-OS">Chrome OS</a> (Debian 10)
 
 Visit <a href="https://BibleTools.app" target="_blank">https://BibleTools.app</a> for further other bible tools we develop.
+
+# Development Team
+
+Eliran Wong (https://github.com/eliranwong)
+
+Oliver Tseng (https://github.com/otseng)
+
+<a href="https://github.com/eliranwong/UniqueBible/wiki/Translators">Program Interface Translators</a>
 
 # Screenshot:
 
 <img src="screenshots/screenshot.png">
 
-# Wiki Pages
+# Automatic Setup
 
-<a href="https://github.com/eliranwong/UniqueBible/wiki">https://github.com/eliranwong/UniqueBible/wiki</a>
+You can simply download & run UBA if you have python in place, read our examples at:
 
-# Technical Support / Join our Development
+https://github.com/eliranwong/UniqueBible/wiki/Installation
 
-You are welcome to join our channel:
+# Features, instructions and how-tos
 
-<a href="https://join.slack.com/t/marvelbible/shared_invite/enQtNDYyMTAxNTMwNTY2LWU4YzUyMzUxYWQxNDNiNDhjMmYwMjdjZTQ0ZWQyODg3NTA1MWZmZmM1ZThmOWFlMGUzZWUxNTllNmMxNTgzYTU">Click here for an invitation link</a>
+[Wiki](https://github.com/eliranwong/UniqueBible/wiki)
+
+# Help, discussion and support
+
+[Discussions](https://github.com/eliranwong/UniqueBible/discussions)
+
+# Feature requests, issues and bug reporting
+
+[Issues](https://github.com/eliranwong/UniqueBible/issues)
 
 # Donations:
 

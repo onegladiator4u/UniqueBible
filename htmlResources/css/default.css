@@ -715,3 +715,18 @@ mbn {
 testColor{
     color: #4f4c4c;
 }
+
+.ohl1 {
+    color: rgb(211, 211, 17);
+}
+
+.ohl2 {
+    color: rgb(79, 247, 250);
+}
+
+.ul1 {
+    text-decoration: underline;
+}
+.oul1 {
+    color: gray;
+}

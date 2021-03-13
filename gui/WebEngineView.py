@@ -1,19 +1,15 @@
-import config, logging
-from PySide2.QtCore import Qt, QLocale
-from PySide2.QtWidgets import QAction, QApplication
-from PySide2.QtWebEngineWidgets import QWebEnginePage, QWebEngineView
-from PySide2.QtGui import QDesktopServices
+import config, os
+from functools import partial
+from qtpy.QtCore import Qt
+#from qtpy.QtGui import QDesktopServices
+from qtpy.QtGui import QGuiApplication
+from qtpy.QtWidgets import QAction, QApplication
+from qtpy.QtWebEngineWidgets import QWebEnginePage, QWebEngineView
 from BibleVerseParser import BibleVerseParser
 from BiblesSqlite import BiblesSqlite
-from Languages import Languages
+from Translator import Translator
 from gui.WebEngineViewPopover import WebEngineViewPopover
-from gui.imports import *
-try:
-    from langdetect import detect, detect_langs, DetectorFactory
-    config.langdetectSupport = True
-except:
-    config.langdetectSupport = False
-    print("Language detect feature is not supported.  To activate this feature, please install plugin langdetect by running 'pip3 install langdetect' and restart the app.")
+from util.FileUtil import FileUtil
 
 class WebEngineView(QWebEngineView):
     
@@ -59,7 +55,31 @@ class WebEngineView(QWebEngineView):
         }
         return book[self.name]
 
+    def switchToCli(self):
+        if config.isHtmlTextInstalled:
+            config.pluginContext = self.name
+            QGuiApplication.instance().setApplicationName("UniqueBible.app CLI")
+            config.pluginContext = ""
+        else:
+            self.displayMessage("CLI feature is not enabled! \n Install module 'html-text' first, by running 'pip3 install html-text'!")
+
     def addMenuActions(self):
+
+        if hasattr(config, "cli"):
+            action = QAction(self)
+            action.setText(config.thisTranslation["cli"])
+            action.triggered.connect(self.switchToCli)
+            self.addAction(action)
+
+        action = QAction(self)
+        action.setText(config.thisTranslation["openOnNewWindow"])
+        action.triggered.connect(self.openOnNewWindow)
+        self.addAction(action)
+
+        separator = QAction(self)
+        separator.setSeparator(True)
+        self.addAction(separator)
+
         copyText = QAction(self)
         copyText.setText(config.thisTranslation["context1_copy"])
         copyText.triggered.connect(self.copySelectedText)
@@ -75,61 +95,76 @@ class WebEngineView(QWebEngineView):
         separator.setSeparator(True)
         self.addAction(separator)
 
-        # TEXT-TO-SPEECH feature
-        if config.ttsSupport:
-            tts = QAction(self)
-            tts.setText(config.thisTranslation["context1_speak"])
-            tts.triggered.connect(self.textToSpeech)
-            self.addAction(tts)
+        if self.name == "main":
+            # Instant highlight feature
+            action = QAction(self)
+            action.setText(config.thisTranslation["instantHighlight"])
+            action.triggered.connect(self.instantHighlight)
+            self.addAction(action)
+
+            action = QAction(self)
+            action.setText(config.thisTranslation["removeInstantHighlight"])
+            action.triggered.connect(self.removeInstantHighlight)
+            self.addAction(action)
 
             separator = QAction(self)
             separator.setSeparator(True)
             self.addAction(separator)
 
-        # Google Translate
-        if config.googletransSupport:
-            if config.showGoogleTranslateEnglishOptions:
-                # Translate into English
-                translateText = QAction(self)
-                translateText.setText(config.thisTranslation["context1_english"])
-                translateText.triggered.connect(self.selectedTextToEnglish)
-                self.addAction(translateText)
-            if config.showGoogleTranslateChineseOptions:
-                # Translate into Traditional Chinese
-                translateText = QAction(self)
-                translateText.setText(config.thisTranslation["context1_tChinese"])
-                translateText.triggered.connect(self.selectedTextToTraditionalChinese)
-                self.addAction(translateText)
-                # Translate into Simplified Chinese
-                translateText = QAction(self)
-                translateText.setText(config.thisTranslation["context1_sChinese"])
-                translateText.triggered.connect(self.selectedTextToSimplifiedChinese)
-                self.addAction(translateText)
-            # Translate into User-defined Language
-            if config.userLanguage:
-                userLanguage = config.userLanguage
-            else:
-                userLanguage = config.thisTranslation["context1_my"]
+        # TEXT-TO-SPEECH feature
+        tts = QAction(self)
+        tts.setText(config.thisTranslation["context1_speak"])
+        tts.triggered.connect(self.textToSpeech)
+        self.addAction(tts)
+
+        separator = QAction(self)
+        separator.setSeparator(True)
+        self.addAction(separator)
+
+        # IBM-Watson Translation Service
+        # Translate into English
+        translateText = QAction(self)
+        translateText.setText(config.thisTranslation["context1_english"])
+        translateText.triggered.connect(self.selectedTextToEnglish)
+        self.addAction(translateText)
+
+        # Translate into User-defined Language
+        if config.userLanguage and not config.userLanguage == "English":
+            userLanguage = config.userLanguage
             translateText = QAction(self)
             translateText.setText("{0} {1}".format(config.thisTranslation["context1_translate"], userLanguage))
             translateText.triggered.connect(self.checkUserLanguage)
             self.addAction(translateText)
 
-            separator = QAction(self)
-            separator.setSeparator(True)
-            self.addAction(separator)
-
         # CHINESE TOOL - pinyin
         # Convert Chinese characters into pinyin
-        if config.pinyinSupport:
+        if config.isPypinyinInstalled:
             pinyinText = QAction(self)
             pinyinText.setText(config.thisTranslation["context1_pinyin"])
             pinyinText.triggered.connect(self.pinyinSelectedText)
             self.addAction(pinyinText)
 
-            separator = QAction(self)
-            separator.setSeparator(True)
-            self.addAction(separator)
+        separator = QAction(self)
+        separator.setSeparator(True)
+        self.addAction(separator)
+
+        action = QAction(self)
+        action.setText(config.thisTranslation["menu7_create"])
+        action.triggered.connect(self.insertIntoNewNote)
+        self.addAction(action)
+
+        separator = QAction(self)
+        separator.setSeparator(True)
+        self.addAction(separator)
+
+        action = QAction(self)
+        action.setText(config.thisTranslation["searchPanel"])
+        action.triggered.connect(self.searchPanel)
+        self.addAction(action)
+
+        separator = QAction(self)
+        separator.setSeparator(True)
+        self.addAction(separator)
 
         self.searchText = QAction(self)
         self.searchText.setText(config.thisTranslation["context1_search"])
@@ -145,6 +180,21 @@ class WebEngineView(QWebEngineView):
         searchFavouriteBible.setText(config.thisTranslation["context1_favourite"])
         searchFavouriteBible.triggered.connect(self.searchSelectedFavouriteBible)
         self.addAction(searchFavouriteBible)
+
+        separator = QAction(self)
+        separator.setSeparator(True)
+        self.addAction(separator)
+
+        for keyword in ("SEARCHBOOKNOTE", "SEARCHCHAPTERNOTE", "SEARCHVERSENOTE"):
+            action = QAction(self)
+            action.setText(config.thisTranslation[keyword])
+            action.triggered.connect(partial(self.searchBibleNote, keyword))
+            self.addAction(action)
+
+        action = QAction(self)
+        action.setText(config.thisTranslation["removeNoteHighlight"])
+        action.triggered.connect(self.removeNoteHighlight)
+        self.addAction(action)
 
         separator = QAction(self)
         separator.setSeparator(True)
@@ -173,6 +223,11 @@ class WebEngineView(QWebEngineView):
         searchFavouriteBooks.setText(config.thisTranslation["context1_allBooks"])
         searchFavouriteBooks.triggered.connect(self.searchAllBooks)
         self.addAction(searchFavouriteBooks)
+
+        action = QAction(self)
+        action.setText(config.thisTranslation["removeBookHighlight"])
+        action.triggered.connect(self.removeBookHighlight)
+        self.addAction(action)
 
         separator = QAction(self)
         separator.setSeparator(True)
@@ -236,14 +291,34 @@ class WebEngineView(QWebEngineView):
         runAsCommandLine.triggered.connect(self.runAsCommand)
         self.addAction(runAsCommandLine)
 
+        separator = QAction(self)
+        separator.setSeparator(True)
+        self.addAction(separator)
+
+        # Context menu plugins
+        if config.enablePlugins:
+            for plugin in FileUtil.fileNamesWithoutExtension(os.path.join("plugins", "context"), "py"):
+                action = QAction(self)
+                action.setText(plugin)
+                action.triggered.connect(partial(self.runPlugin, plugin))
+                self.addAction(action)
+
+    def runPlugin(self, fileName):
+        config.contextSource = self
+        config.pluginContext = self.selectedText()
+        script = os.path.join(os.getcwd(), "plugins", "context", "{0}.py".format(fileName))
+        self.parent.parent.execPythonFile(script)
+        config.pluginContext = ""
+        config.contextSource = None
+
     def messageNoSelection(self):
-        self.displayMessage("{0}\n{1}".format(config.thisTranslation["message_run"], config.thisTranslation["message_selectWord"]))
+        self.displayMessage("{0}\n{1}".format(config.thisTranslation["message_run"], config.thisTranslation["selectTextFirst"]))
 
     def messageNoTtsEngine(self):
         self.displayMessage(config.thisTranslation["message_noSupport"])
 
     def messageNoTtsVoice(self):
-        self.displayMessage(config.thisTranslation["message_noSupport"])
+        self.displayMessage(config.thisTranslation["message_noTtsVoice"])
 
     def copySelectedText(self):
         if not self.selectedText():
@@ -256,6 +331,20 @@ class WebEngineView(QWebEngineView):
 
     def copyHtmlToClipboard(self, html):
         QApplication.clipboard().setText(html)
+
+    # Instant highligh feature
+    def instantHighlight(self):
+        selectedText = self.selectedText()
+        if not selectedText:
+            self.messageNoSelection()
+        else:
+            config.instantHighlightString = selectedText
+            self.parent.parent.reloadCurrentRecord()
+
+    def removeInstantHighlight(self):
+        if config.instantHighlightString:
+            config.instantHighlightString = ""
+            self.parent.parent.reloadCurrentRecord()
 
     # Translate selected words into English
     def selectedTextToEnglish(self):
@@ -279,32 +368,42 @@ class WebEngineView(QWebEngineView):
         if not selectedText:
             self.messageNoSelection()
         else:
-            self.translateTextIntoUserLanguage(selectedText, "zh-CN")
+            self.translateTextIntoUserLanguage(selectedText, "zh")
 
     # Check if config.userLanguage is set
     def checkUserLanguage(self):
-        if config.userLanguage:
-            selectedText = self.selectedText()
-            if not selectedText:
-                self.messageNoSelection()
+        # Use IBM Watson service to translate text
+        translator = Translator()
+        if translator.language_translator is not None:
+            if config.userLanguage and config.userLanguage in Translator.toLanguageNames:
+                selectedText = self.selectedText()
+                if not selectedText:
+                    self.messageNoSelection()
+                else:
+                    userLanguage = Translator.toLanguageCodes[Translator.toLanguageNames.index(config.userLanguage)]
+                    self.translateTextIntoUserLanguage(selectedText, userLanguage)
             else:
-                userLanguage = Languages().codes[config.userLanguage]
-                self.translateTextIntoUserLanguage(selectedText, userLanguage)
+                self.parent.parent.openTranslationLanguageDialog()
         else:
-            self.parent.parent.openMyLanguageDialog()
+            self.parent.parent.displayMessage(config.thisTranslation["ibmWatsonNotEnalbed"])
+            config.mainWindow.openWebsite("https://github.com/eliranwong/UniqueBible/wiki/IBM-Watson-Language-Translator")
 
     # Translate selected words into user-defined language
     def translateTextIntoUserLanguage(self, text, userLanguage="en"):
-        try:
-            translatedText = Translator().translate(text, dest=userLanguage).text
-            if config.autoCopyGoogleTranslateOutput:
-                qApp.clipboard().setText(translatedText)
-        except:
-            translatedText = "ATTENTION! Google Translate is not accessible.  Internet connection is required for this feature."
-        self.displayMessage(translatedText)
+        # Use IBM Watson service to translate text
+        translator = Translator()
+        if translator.language_translator is not None:
+            translation = translator.translate(text, None, userLanguage)
+            self.parent.parent.displayMessage(translation)
+            if config.autoCopyTranslateResult:
+                QApplication.clipboard().setText(translation)
+        else:
+            self.parent.parent.displayMessage(config.thisTranslation["ibmWatsonNotEnalbed"])
+            config.mainWindow.openWebsite("https://github.com/eliranwong/UniqueBible/wiki/IBM-Watson-Language-Translator")
 
     # Translate Chinese characters into pinyin
     def pinyinSelectedText(self):
+        from pypinyin import pinyin
         if not self.selectedText():
             self.messageNoSelection()
         else:
@@ -312,47 +411,39 @@ class WebEngineView(QWebEngineView):
             pinyinList = [" ".join(list) for list in pinyinList]
             pinyinText = " ".join(pinyinList)
             if config.autoCopyChinesePinyinOutput:
-                qApp.clipboard().setText(pinyinText)
+                QApplication.clipboard().setText(pinyinText)
             self.displayMessage(pinyinText)
 
     # TEXT-TO-SPEECH feature
     def textToSpeech(self):
-        if config.ttsSupport:
-            if not self.selectedText():
+        if config.isTtsInstalled:
+            selectedText = self.selectedText()
+            if not selectedText:
                 self.messageNoSelection()
+            elif config.isLangdetectInstalled and config.useLangDetectOnTts:
+                from langdetect import detect, DetectorFactory
+                DetectorFactory.seed = 0
+                # https://pypi.org/project/langdetect/
+                language = detect(selectedText)
+                speakCommand = "SPEAK:::{0}:::{1}".format(language, selectedText)
+                self.parent.parent.textCommandChanged(speakCommand, self.name)
             else:
-                engineNames = QTextToSpeech.availableEngines()
-                if engineNames:
-                    self.engine = QTextToSpeech(engineNames[0])
-                    locales = self.engine.availableLocales()
-                    # print(locales)
-                    if config.langdetectSupport:
-                        DetectorFactory.seed = 0
-                        # https://pypi.org/project/langdetect/
-                        language = detect(self.selectedText())
-                        # print(language)
-                        # Language codes: https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes
-                        if (language == 'zh-cn'):
-                            self.engine.setLocale(QLocale(QLocale.Chinese, QLocale.SimplifiedChineseScript, QLocale.China))
-                        elif (language == 'zh-tw'):
-                            self.engine.setLocale(QLocale(QLocale.Chinese, QLocale.TraditionalChineseScript, QLocale.Taiwan))
-                        elif (language == 'ko'): # Incorrectly detects Korean for short Chinese sentences
-                            self.engine.setLocale(QLocale(QLocale.Chinese, QLocale.TraditionalChineseScript, QLocale.Taiwan))
-                        elif (language == 'el'):
-                            self.engine.setLocale(QLocale(QLocale.Greek, QLocale.GreekScript, QLocale.Greece))
-                            self.engine.setRate(-0.3)
-                        elif (language == 'he'):
-                            self.engine.setLocale(QLocale(QLocale.Hebrew, QLocale.HebrewScript, QLocale.Israel))
-                            self.engine.setRate(-0.3)
-                    engineVoices = self.engine.availableVoices()
-                    self.engine.setVolume(1.0)
-                    if engineVoices:
-                        self.engine.setVoice(engineVoices[0])
-                        self.engine.say(self.selectedText())
-                    else:
-                        self.messageNoTtsVoice()
-                else:
-                    self.messageNoTtsEngine()
+                speakCommand = "SPEAK:::{0}".format(selectedText)
+                self.parent.parent.textCommandChanged(speakCommand, self.name)
+        else:
+            self.messageNoTtsEngine()
+
+    def searchPanel(self):
+        selectedText = self.selectedText()
+        if selectedText:
+            config.contextItem = selectedText
+        self.parent.parent.openControlPanelTab(2)
+
+    def insertIntoNewNote(self):
+        selectedText = self.selectedText()
+        if selectedText:
+            config.contextItem = selectedText
+        self.parent.parent.createNewNoteFile()
 
     def searchSelectedText(self):
         selectedText = self.selectedText()
@@ -410,6 +501,24 @@ class WebEngineView(QWebEngineView):
             searchCommand = "SEARCHBOOK:::ALL:::{0}".format(selectedText)
             self.parent.parent.textCommandChanged(searchCommand, self.name)
 
+    def removeBookHighlight(self):
+        if config.bookSearchString:
+            config.bookSearchString = ""
+            self.parent.parent.reloadCurrentRecord()
+
+    def searchBibleNote(self, keyword):
+        selectedText = self.selectedText()
+        if not selectedText:
+            self.messageNoSelection()
+        else:
+            searchCommand = "{0}:::{1}".format(keyword, selectedText)
+            self.parent.parent.textCommandChanged(searchCommand, self.name)
+
+    def removeNoteHighlight(self):
+        if config.noteSearchString:
+            config.noteSearchString = ""
+            self.parent.parent.reloadCurrentRecord()
+
     def searchResource(self, module):
         selectedText = self.selectedText()
         if not selectedText:
@@ -444,6 +553,12 @@ class WebEngineView(QWebEngineView):
             searchCommand = "SEARCHTHIRDDICTIONARY:::{0}:::{1}".format(config.thirdDictionary, selectedText)
             self.parent.parent.textCommandChanged(searchCommand, self.name)
 
+    def openOnNewWindow(self):
+        self.page().runJavaScript("document.documentElement.outerHTML", 0, self.openNewWindow)
+
+    def openNewWindow(self, html):
+        self.openPopover(html=html)
+
     def extractAllReferences(self):
         selectedText = self.selectedText()
         parser = BibleVerseParser(config.parserStandarisation)
@@ -465,7 +580,7 @@ class WebEngineView(QWebEngineView):
             self.displayMessage(config.thisTranslation["message_noReference"])
         else:
             references = "; ".join([parser.bcvToVerseReference(*verse) for verse in verseList])
-            qApp.clipboard().setText(references)
+            QApplication.clipboard().setText(references)
         del parser
 
     def runAsCommand(self):
@@ -488,14 +603,27 @@ class WebEngineView(QWebEngineView):
             activeBCVsettings = "<script>var activeText = '{0}'; var activeB = {1}; var activeC = {2}; var activeV = {3};</script>".format(config.mainText, config.mainB, config.mainC, config.mainV)
         elif self.name == "study":
             activeBCVsettings = "<script>var activeText = '{0}'; var activeB = {1}; var activeC = {2}; var activeV = {3};</script>".format(config.studyText, config.studyB, config.studyC, config.studyV)
-        html = "<!DOCTYPE html><html><head><title>UniqueBible.app</title><style>body {1} font-size: {3}px; font-family:'{4}'; {2} zh {1} font-family:'{5}'; {2}</style><link rel='stylesheet' type='text/css' href='css/{7}.css'><script src='js/{7}.js'></script><script src='w3.js'></script>{6}<script>var versionList = []; var compareList = []; var parallelList = []; var diffList = []; var searchList = [];</script></head><body><span id='v0.0.0'></span>{0}</body></html>".format(html, "{", "}", config.fontSize, config.font, config.fontChinese, activeBCVsettings, config.theme)
+        html = "<!DOCTYPE html><html><head><title>UniqueBible.app</title><style>body {1} font-size: {3}px; font-family:'{4}'; {2} zh {1} font-family:'{5}'; {2} {8}</style><link id='theme_stylesheet' rel='stylesheet' type='text/css' href='css/{7}.css'><link id='theme_stylesheet' rel='stylesheet' type='text/css' href='css/custom.css'><script src='js/{7}.js'></script><script src='w3.js'></script><script src='js/custom.js'></script>{6}<script>var versionList = []; var compareList = []; var parallelList = []; var diffList = []; var searchList = [];</script></head><body><span id='v0.0.0'></span>{0}</body></html>".format(html, "{", "}", config.fontSize, config.font, config.fontChinese, activeBCVsettings, config.theme, self.parent.parent.getHighlightCss())
         self.popoverView = WebEngineViewPopover(self, name, self.name)
         self.popoverView.setHtml(html, config.baseUrl)
+        self.popoverView.setMinimumWidth(config.popoverWindowWidth)
+        self.popoverView.setMinimumHeight(config.popoverWindowHeight)
         self.popoverView.show()
 
 class WebEnginePage(QWebEnginePage):
+
+    def __init__(self, parent):
+        super().__init__()
+        self.parent = parent
+
     def acceptNavigationRequest(self, url,  _type, isMainFrame):
         if _type == QWebEnginePage.NavigationTypeLinkClicked:
-            QDesktopServices.openUrl(url);
+            # The following line opens a desktop browser
+            #QDesktopServices.openUrl(url);
+
+            # url here is a QUrl
+            # can redirect to another link, e.g.
+            # url = QUrl("https://marvel.bible")
+            self.setUrl(url)
             return False
         return True

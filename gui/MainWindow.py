@@ -1,39 +1,64 @@
-import os, sys, re, config, base64, webbrowser, platform, subprocess, zipfile, gdown, requests, update, myTranslation, logging
+import os, sys, re, config, base64, webbrowser, platform, subprocess, requests, update, logging
 from datetime import datetime
-from ast import literal_eval
-from PySide2.QtCore import QUrl, Qt, QEvent
-from PySide2.QtGui import QIcon, QGuiApplication, QFont
-from PySide2.QtWidgets import (QAction, QInputDialog, QLineEdit, QMainWindow, QMessageBox, QPushButton, QToolBar, QWidget, QFileDialog, QLabel, QFrame, QFontDialog)
+from distutils import util
+from functools import partial
+from qtpy.QtCore import QUrl, Qt, QEvent
+from qtpy.QtGui import QIcon, QGuiApplication, QFont
+from qtpy.QtWidgets import (QAction, QInputDialog, QLineEdit, QMainWindow, QMessageBox, QWidget, QFileDialog, QLabel,
+                               QFrame, QFontDialog, QApplication, QPushButton)
+
+import exlbl
+from BibleBooks import BibleBooks
 from TextCommandParser import TextCommandParser
 from BibleVerseParser import BibleVerseParser
-from BiblesSqlite import BiblesSqlite
+from BiblesSqlite import BiblesSqlite, Bible
 from TextFileReader import TextFileReader
-from NoteSqlite import NoteSqlite
+from Translator import Translator
 from ThirdParty import Converter, ThirdPartyDictionary
 from Languages import Languages
-from ToolsSqlite import BookData, IndexesSqlite
-from translations import translations
-from shutil import copyfile, rmtree
-from distutils.dir_util import copy_tree
+from ToolsSqlite import BookData, IndexesSqlite, Book
+from db.Highlight import Highlight
+from gui.EditGuiLanguageFileDialog import EditGuiLanguageFileDialog
+from gui.InfoDialog import InfoDialog
+# These "unused" window imports are actually used.  Do not delete these lines.
+from gui.AlephMainWindow import AlephMainWindow
+from gui.ClassicMainWindow import ClassicMainWindow
+from gui.FocusMainWindow import FocusMainWindow
+from gui.DisplayShortcutsWindow import DisplayShortcutsWindow
+from gui.GistWindow import GistWindow
+from shutil import copyfile
 from gui.Downloader import Downloader
+from gui.ModifyDatabaseDialog import ModifyDatabaseDialog
+from gui.WatsonCredentialWindow import WatsonCredentialWindow
 from gui.MoreConfigOptions import MoreConfigOptions
 from gui.ImportSettings import ImportSettings
 from gui.NoteEditor import NoteEditor
-from gui.RemoteControl import RemoteControl
+from gui.MasterControl import MasterControl
+from gui.MiniControl import MiniControl
 from gui.MorphDialog import MorphDialog
-from gui.YouTubePopover import YouTubePopover
+from gui.MiniBrowser import MiniBrowser
 from gui.CentralWidget import CentralWidget
-from gui.imports import *
+from gui.AppUpdateDialog import AppUpdateDialog
 from ToolsSqlite import LexiconData
+from TtsLanguages import TtsLanguages
+from util.DateUtil import DateUtil
+from util.LanguageUtil import LanguageUtil
+from util.MacroParser import MacroParser
+from util.NoteService import NoteService
+from util.ShortcutUtil import ShortcutUtil
+from util.TextUtil import TextUtil
+import shortcut as sc
+from util.UpdateUtil import UpdateUtil
+
 
 class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self.logger = logging.getLogger('uba')
 
-        # Repository
-        # Read about downloading a raw github file: https://unix.stackexchange.com/questions/228412/how-to-wget-a-github-file
-        self.repository = "https://raw.githubusercontent.com/eliranwong/UniqueBible/master/"
+        config.inBootupMode = True
+        bootStartTime = datetime.now()
         # delete old files
         for items in update.oldFiles:
             filePath = os.path.join(*items)
@@ -58,6 +83,8 @@ class MainWindow(QMainWindow):
         self.lastMainTextCommand = ""
         self.lastStudyTextCommand = ""
         self.newTabException = False
+        self.pdfOpened = False
+        self.onlineCommand = ""
         # a variable to monitor if new changes made to editor's notes
         self.noteSaved = True
         # variables to work with Qt dialog
@@ -69,18 +96,21 @@ class MainWindow(QMainWindow):
         self.directoryLabel.setFrameStyle(frameStyle)
 
         # setup UI
-        self.setWindowTitle("UniqueBible.app [version {0}]".format(config.version))
-        appIconFile = os.path.join("htmlResources", "theText.png")
+        self.setWindowTitle("UniqueBible.app [version {0:.2f}]".format(config.version))
+        appIconFile = os.path.join("htmlResources", "UniqueBibleApp.png")
         appIcon = QIcon(appIconFile)
         QGuiApplication.setWindowIcon(appIcon)
         # setup user menu & toolbars
-        self.create_menu()
-        self.setupToolBar()
-        self.setAdditionalToolBar()
+
+        # Setup menu layout
+        self.refreshing = False
+        self.versionCombo = None
+        self.setupMenuLayout(config.menuLayout)
+
         # assign views
-        # mainView & studyView are assigned with class "CentralWidget"        
+        # mainView & studyView are assigned with class "CentralWidget"
         self.mainView = None
-        self.studyView = None        
+        self.studyView = None
         self.noteEditor = None
         self.centralWidget = CentralWidget(self)
         self.instantView = self.centralWidget.instantView
@@ -107,14 +137,56 @@ class MainWindow(QMainWindow):
         self.checkApplicationUpdate()
         # check if newer versions of formatted bibles are available
         self.checkModulesUpdate()
+        # Control Panel
+        self.controlPanel = None
+        # Mini control
+        self.miniControl = None
+        # Used in pause() to pause macros
+        self.pauseMode = False
 
-        # setup a remote controller
-        self.remoteControl = RemoteControl(self)
-        if config.remoteControl:
-            self.manageRemoteControl(True)
+        # pre-load control panel
+        #self.manageControlPanel(config.showControlPanelOnStartup)
+
+        config.inBootupMode = False
+        bootEndTime = datetime.now()
+        timeDifference = (bootEndTime - bootStartTime).total_seconds()
+
+        self.logger.info("Boot start time: {0}".format(timeDifference))
 
     def __del__(self):
         del self.textCommandParser
+
+    # Dynamically load menu layout
+    def setupMenuLayout(self, layout):
+        config.noStudyBibleToolbar = True if layout == "focus" else False
+        try:
+            self.menuBar().clear()
+            self.removeToolBar(self.firstToolBar)
+            self.removeToolBar(self.secondToolBar)
+            self.removeToolBar(self.leftToolBar)
+            self.removeToolBar(self.rightToolBar)
+            self.removeToolBar(self.studyBibleToolBar)
+        except:
+            pass
+
+        windowClass = None
+        if layout in ("classic", "focus", "aleph"):
+            windowName = layout.capitalize() + "MainWindow"
+            windowClass = getattr(sys.modules[__name__], windowName)
+        elif config.enablePlugins:
+            file = os.path.join(os.getcwd(), "plugins", "layout", layout+".py")
+            if os.path.exists(file):
+                mod = __import__('plugins.layout.{0}'.format(layout), fromlist=[layout])
+                windowClass = getattr(mod, layout)
+        if windowClass is None:
+            config.menuLayout = "focus"
+            windowClass = getattr(sys.modules[__name__], "FocusMainWindow")
+        getattr(windowClass, 'create_menu')(self)
+        if config.toolBarIconFullSize:
+            getattr(windowClass, 'setupToolBarFullIconSize')(self)
+        else:
+            getattr(windowClass, 'setupToolBarStandardIconSize')(self)
+        self.setAdditionalToolBar()
 
     def setOsOpenCmd(self):
         if platform.system() == "Linux":
@@ -125,74 +197,7 @@ class MainWindow(QMainWindow):
             config.open = config.openWindows
 
     def setTranslation(self):
-        updateNeeded = False
-        languages = Languages()
-        if config.userLanguageInterface and hasattr(myTranslation, "translation"):
-            # Check for missing items. Use Google Translate to translate the missing items.  Or use default English translation to fill in missing items if internet connection is not available.
-            for key, value in languages.translation.items():
-                if not key in myTranslation.translation:
-                    if config.googletransSupport and hasattr(myTranslation, "translationLanguage"):
-                        try:
-                            languageCode = languages.codes[myTranslation.translationLanguage]
-                            myTranslation.translation[key] = Translator().translate(value, dest=languageCode).text
-                        except:
-                            myTranslation.translation[key] = value
-                    else:
-                        myTranslation.translation[key] = value
-                    updateNeeded = True
-            # set thisTranslation to customised translation
-            config.thisTranslation = myTranslation.translation
-            # update myTranslation.py
-            if updateNeeded:
-                try:
-                    languages.writeMyTranslation(myTranslation.translation, myTranslation.translationLanguage)
-                except:
-                    print("Failed to update 'myTranslation.py'.")
-                self.displayMessage("{0}  {1} 'config.py'".format(config.thisTranslation["message_newInterfaceItems"], config.thisTranslation["message_improveTrans"]))
-        elif config.userLanguageInterface and hasattr(config, "translationLanguage"):
-            languageCode = languages.codes[config.translationLanguage]
-            if languageCode in translations:
-                # set thisTranslation to provided translation
-                config.thisTranslation = translations[languageCode]
-            else:
-                # set thisTranslation to default English translation
-                config.thisTranslation = languages.translation
-        else:
-            # set thisTranslation to default English translation
-            config.thisTranslation = languages.translation
-
-    def translateInterface(self):
-        if config.googletransSupport:
-            if not config.userLanguage:
-                self.displayMessage("{0}\n{1}".format(config.thisTranslation["message_run"], config.thisTranslation["message_setLanguage"]))
-            else:
-                if Languages().translateInterface(config.userLanguage):
-                    config.userLanguageInterface = True
-                    self.displayMessage("{0}  {1} 'config.py'".format(config.thisTranslation["message_restart"], config.thisTranslation["message_improveTrans"]))
-                else:
-                    config.userLanguageInterface = False
-                    self.displayMessage("'{0}' translation have not been added yet.  You can send us an email to request a copy of your language.".format(config.userLanguage))
-        else:
-            self.displayMessage("{0} 'googletrans'\n{1}".format(config.thisTranslation["message_missing"], config.thisTranslation["message_installFirst"]))
-
-    def isMyTranslationAvailable(self):
-        if hasattr(myTranslation, "translation") and hasattr(myTranslation, "translationLanguage"):
-            return True
-        else:
-            return False
-
-    def isOfficialTranslationAvailable(self):
-        if hasattr(config, "translationLanguage") and Languages().codes[config.translationLanguage] in translations:
-            return True
-        else:
-            return False
-
-    def toogleInterfaceTranslation(self):
-        if not self.isMyTranslationAvailable() and not self.isOfficialTranslationAvailable():
-            self.displayMessage("{0}\n{1}".format(config.thisTranslation["message_run"], config.thisTranslation["message_translateFirst"]))
-        else:
-            config.userLanguageInterface = not config.userLanguageInterface
-            self.displayMessage(config.thisTranslation["message_restart"])
+        config.thisTranslation = LanguageUtil.loadTranslation(config.displayLanguage)
 
     # base folder for webViewEngine
     def setupBaseUrl(self):
@@ -200,29 +205,133 @@ class MainWindow(QMainWindow):
         # External objects, such as stylesheets or images referenced in the HTML document, are located RELATIVE TO baseUrl .
         # e.g. put all local files linked by html's content in folder "htmlResources"
         global baseUrl
-        relativePath = os.path.join("htmlResources", "theText.png")
+        relativePath = os.path.join("htmlResources", "UniqueBibleApp.png")
         absolutePath = os.path.abspath(relativePath)
         baseUrl = QUrl.fromLocalFile(absolutePath)
         config.baseUrl = baseUrl
 
-    def manageRemoteControl(self, open=False):
-        if open or not config.remoteControl:
-            self.remoteControl.show()
-            config.remoteControl = True
+    def focusCommandLineField(self):
+        if config.preferControlPanelForCommandLineEntry:
+            self.manageControlPanel()
+        elif self.textCommandLineEdit.isVisible():
+            self.textCommandLineEdit.setFocus()
+        if config.clearCommandEntry:
+            self.textCommandLineEdit.setText("")
+
+    def openMiniControlTab(self, index):
+        config.miniControlInitialTab = index
+        self.manageMiniControl()
+
+    def openControlPanelTab(self, index=None, b=None, c=None, v=None, text=None):
+        if index is None:
+            index = 0
+        if b is None:
+            b = config.mainB
+        if c is None:
+            c = config.mainC
+        if v is None:
+            v = config.mainV
+        if text is None:
+            text = config.mainText
+
+        if self.textCommandParser.isDatabaseInstalled("bible"):
+            # self.controlPanel.tabs.setCurrentIndex(index)
+            self.manageControlPanel(True, index, b, c, v, text)
         else:
-            self.remoteControl.hide()
-            config.remoteControl = False
+            self.textCommandParser.databaseNotInstalled("bible")
+
+    def reloadResources(self):
+        self.setMenuLayout(config.menuLayout)
+        self.reloadControlPanel(False)
+
+    def reloadControlPanel(self, show=True):
+        if self.controlPanel:
+            self.controlPanel.close()
+            config.controlPanel = False
+            self.manageControlPanel(show)
+
+    def manageControlPanel(self, show=True, index=None, b=None, c=None, v=None, text=None):
+        if index is None:
+            index = 0
+        if b is None:
+            b = config.mainB
+        if c is None:
+            c = config.mainC
+        if v is None:
+            v = config.mainV
+        if text is None:
+            text = config.mainText
+
+        if self.textCommandParser.isDatabaseInstalled("bible"):
+            if config.controlPanel and not (self.controlPanel.isVisible() and self.controlPanel.isActiveWindow()):
+                self.controlPanel.updateBCVText(b, c, v, text)
+                self.controlPanel.tabs.setCurrentIndex(index)
+                textCommandText = self.textCommandLineEdit.text()
+                if textCommandText:
+                    self.controlPanel.commandField.setText(textCommandText)
+                self.controlPanel.raise_()
+                # Method activateWindow() does not work with qt.qpa.wayland
+                # platform.system() == "Linux" and not os.getenv('QT_QPA_PLATFORM') is None and os.getenv('QT_QPA_PLATFORM') == "wayland"
+                # The error message is received when QT_QPA_PLATFORM=wayland:
+                # qt.qpa.wayland: Wayland does not support QWindow::requestActivate()
+                # Therefore, we use hide and show methods instead with wayland.
+                if self.controlPanel.isVisible() and not self.controlPanel.isActiveWindow():
+                    self.controlPanel.hide()
+                self.controlPanel.show()
+                self.controlPanel.tabChanged(index)
+                self.controlPanel.activateWindow()
+            elif not config.controlPanel:
+                self.controlPanel = MasterControl(self, index, b, c, v, text)
+                if show:
+                    self.controlPanel.show()
+                    self.controlPanel.tabChanged(index)
+                if config.clearCommandEntry:
+                    self.controlPanel.commandField.setText("")
+                else:
+                    self.controlPanel.commandField.setText(self.textCommandLineEdit.text())
+                config.controlPanel = True
+            # elif self.controlPanel:
+            #        self.controlPanel.close()
+            #        config.controlPanel = False
+        else:
+            self.textCommandParser.databaseNotInstalled("bible")
+
+    def manageMiniControl(self):
+        if config.miniControl:
+            textCommandText = self.textCommandLineEdit.text()
+            if textCommandText:
+                self.miniControl.searchLineEdit.setText(textCommandText)
+            self.miniControl.tabs.setCurrentIndex(config.miniControlInitialTab)
+            self.bringToForeground(self.miniControl)
+        else:
+            self.miniControl = MiniControl(self)
+            self.miniControl.setMinimumHeight(config.minicontrolWindowHeight)
+            self.miniControl.setMinimumWidth(config.minicontrolWindowWidth)
+            self.miniControl.show()
+            textCommandText = self.textCommandLineEdit.text()
+            if config.clearCommandEntry:
+                self.miniControl.searchLineEdit.setText("")
+            elif textCommandText:
+                self.miniControl.searchLineEdit.setText(textCommandText)
+            config.miniControl = True
 
     def closeEvent(self, event):
         if self.noteEditor:
             if self.noteEditor.close():
                 event.accept()
-                qApp.quit()
+                QGuiApplication.instance().quit()
             else:
                 event.ignore()
+                # Bring forward the note editor.
+                # qt.qpa.wayland: Wayland does not support QWindow::requestActivate()
+                self.noteEditor.hide()
+                self.noteEditor.show()
         else:
             event.accept()
-            qApp.quit()
+            QGuiApplication.instance().quit()
+
+    def quitApp(self):
+        QGuiApplication.instance().quit()
 
     # check migration
     def checkMigration(self):
@@ -230,77 +339,65 @@ class MainWindow(QMainWindow):
             biblesSqlite = BiblesSqlite()
             biblesWithBothVersions = biblesSqlite.migratePlainFormattedBibles()
             if biblesWithBothVersions:
-                self.displayMessage("{0}  {1}".format(config.thisTranslation["message_migration"], config.thisTranslation["message_willBeNoticed"]))
+                self.displayMessage("{0}  {1}".format(config.thisTranslation["message_migration"],
+                                                      config.thisTranslation["message_willBeNoticed"]))
                 biblesSqlite.proceedMigration(biblesWithBothVersions)
                 self.displayMessage(config.thisTranslation["message_done"])
             if config.migrateDatabaseBibleNameToDetailsTable:
-                biblesSqlite.migrateDatabaseContent() 
+                biblesSqlite.migrateDatabaseContent()
             del biblesSqlite
 
-    def displayMessage(self, message, title="UniqueBible"):
-        reply = QMessageBox.information(self, title, message)
+    def displayMessage(self, message="", title="UniqueBible"):
+        if hasattr(config, "cli") and config.cli:
+            print(message)
+        else:
+            reply = QMessageBox.information(self, title, message)
 
     # manage key capture
     def event(self, event):
         if event.type() == QEvent.KeyRelease:
+            self.pauseMode = False
             if event.key() == Qt.Key_Tab:
-                self.textCommandLineEdit.setFocus()
-                return True
+                self.focusCommandLineField()
             elif event.key() == Qt.Key_Escape:
                 self.setNoToolBar()
                 return True
-            # CHINESE TOOL - openCC
-            # Convert command line from simplified Chinese to traditional Chinese characters
-            # Ctrl + H
-#            elif openccSupport and event.modifiers() == Qt.ControlModifier and event.key() == Qt.Key_H:
-#                newTextCommand = opencc.convert(self.textCommandLineEdit.text(), config="s2t.json")
-#                self.textCommandLineEdit.setText(newTextCommand)
-#                return True
         return QWidget.event(self, event)
 
     # manage main page
     def setMainPage(self):
         # main page changes as tab is changed.
-        #print(self.mainView.currentIndex())
+        # print(self.mainView.currentIndex())
         self.mainPage = self.mainView.currentWidget().page()
         if config.theme == "dark":
             self.mainPage.setBackgroundColor(Qt.transparent)
-        self.mainPage.titleChanged.connect(self.mainTextCommandChanged)
-        self.mainPage.loadFinished.connect(self.finishMainViewLoading)
         self.mainPage.pdfPrintingFinished.connect(self.pdfPrintingFinishedAction)
 
     def setStudyPage(self, tabIndex=None):
         if tabIndex != None:
             self.studyView.setCurrentIndex(tabIndex)
         # study page changes as tab is changed.
-        #print(self.studyView.currentIndex())
+        # print(self.studyView.currentIndex())
         self.studyPage = self.studyView.currentWidget().page()
         if config.theme == "dark":
             self.studyPage.setBackgroundColor(Qt.transparent)
-        self.studyPage.titleChanged.connect(self.studyTextCommandChanged)
-        self.studyPage.loadFinished.connect(self.finishStudyViewLoading)
         self.studyPage.pdfPrintingFinished.connect(self.pdfPrintingFinishedAction)
 
     # manage latest update
     def checkApplicationUpdate(self):
-        # delete unwanted old files / folders
-        if config.version < 11.6:
-            oldExlblFolder = os.path.join("htmlResources", "images", "EXLBL")
-            if os.path.isdir(oldExlblFolder):
-                rmtree(oldExlblFolder)
         try:
+            checkFile = "{0}UniqueBibleAppVersion.txt".format(UpdateUtil.repository)
             # latest version number is indicated in file "UniqueBibleAppVersion.txt"
-            checkFile = "{0}UniqueBibleAppVersion.txt".format(self.repository)
             request = requests.get(checkFile, timeout=5)
             if request.status_code == 200:
                 # tell the rest that internet connection is available
                 config.internet = True
                 # compare with user's current version
-                if float(request.text) > config.version:
+                if UpdateUtil.checkIfShouldCheckForAppUpdate() and not UpdateUtil.currentIsLatest(config.version, request.text):
                     self.promptUpdate(request.text)
             else:
                 config.internet = False
-        except:
+        except Exception as e:
             config.internet = False
             print("Failed to read '{0}'.".format(checkFile))
 
@@ -310,7 +407,11 @@ class MainWindow(QMainWindow):
                 abb = filename[:-6]
                 if os.path.isfile(os.path.join(*self.bibleInfo[abb][0])):
                     if self.isNewerAvailable(filename):
-                        self.displayMessage("{1} {0}.  {2} '{3} > {4}'".format(filename, config.thisTranslation["message_newerFile"], config.thisTranslation["message_installFrom"], config.thisTranslation["menu8_resources"], config.thisTranslation["menu8_bibles"]))
+                        self.displayMessage(
+                            "{1} {0}.  {2} '{3} > {4}'".format(filename, config.thisTranslation["message_newerFile"],
+                                                               config.thisTranslation["message_installFrom"],
+                                                               config.thisTranslation["menu8_resources"],
+                                                               config.thisTranslation["menu8_bibles"]))
 
     def isNewerAvailable(self, filename):
         abb = filename[:-6]
@@ -324,90 +425,26 @@ class MainWindow(QMainWindow):
         return True
 
     def promptUpdate(self, latestVersion):
+        config.lastAppUpdateCheckDate = str(DateUtil.localDateNow())
         reply = QMessageBox.question(self, "Update is available ...",
-                    "Update is available ...\n\nLatest version: {0}\nInstalled version: {1}\n\nDo you want to proceed the update?".format(latestVersion, config.version),
-                    QMessageBox.Yes | QMessageBox.No)
+                                     "Update is available ...\n\nLatest version: {0}\nInstalled version: {1:.2f}\n\nDo you want to proceed the update?".format(
+                                         latestVersion, config.version),
+                                     QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.Yes:
-            self.updateUniqueBibleApp()
-
-    # The following update method is used from version 11.9 onwards
-    # "patches.txt" from the repository is read for proceeding the update
-    def updateUniqueBibleApp(self):
-        requestObject = requests.get("{0}patches.txt".format(self.repository))
-        for line in requestObject.text.split("\n"):
-            if line:
-                try:
-                    version, contentType, filePath = literal_eval(line)
-                    if version > config.version:
-                        localPath = os.path.join(*filePath.split("/"))
-                        if contentType == "folder":
-                            if not os.path.isdir(localPath):
-                                os.makedirs(localPath)
-                        elif contentType == "file":
-                            requestObject2 = requests.get("{0}{1}".format(self.repository, filePath))
-                            with open(localPath, "wb") as fileObject:
-                                fileObject.write(requestObject2.content)
-                except:
-                    # message on failed item
-                    self.displayMessage("{0}\n{1}".format(config.thisTranslation["message_fail"], line))
-        # set executable files on macOS or Linux
-        if not platform.system() == "Windows":
-            for filename in ("main.py", "BibleVerseParser.py", "RegexSearch.py", "shortcut_uba_Windows_wsl2.sh", "shortcut_uba_macOS_Linux.sh"):
-                os.chmod(filename, 0o755)
-        # finish message
-        self.displayMessage("{0}  {1}".format(config.thisTranslation["message_done"], config.thisTranslation["message_restart"]))
-        self.openExternalFile("latest_changes.txt")
-
-    # old way to do the update, all content will be downloaded to overwrite all current files
-    def updateUniqueBibleApp2(self):
-        masterfile = "https://github.com/eliranwong/UniqueBible/archive/master.zip"
-        request = requests.get(masterfile)
-        if request.status_code == 200:
-            filename = masterfile.split("/")[-1]
-            with open(filename, "wb") as content:
-                content.write(request.content)
-            if filename.endswith(".zip"):
-                zipObject = zipfile.ZipFile(filename, "r")
-                zipObject.extractall(os.getcwd())
-                zipObject.close()
-                os.remove(filename)
-                # We use "distutils.dir_util.copy_tree" below instead of "shutil.copytree", as "shutil.copytree" does not overwrite old files.
-                try:
-                    # delete unwant files / folders first
-                    oldExlblFolder = os.path.join("htmlResources", "images", "EXLBL")
-                    if os.path.isdir(oldExlblFolder):
-                        rmtree(oldExlblFolder)
-                    # copy all new content
-                    copy_tree("UniqueBible-master", os.getcwd())
-                except:
-                    print("Failed to overwrite files.")
-                # set executable files on macOS or Linux
-                if not platform.system() == "Windows":
-                    for filename in ("main.py", "BibleVerseParser.py", "RegexSearch.py", "shortcut_uba_Windows_wsl2.sh", "shortcut_uba_macOS_Linux.sh"):
-                        os.chmod(filename, 0o755)
-                # remove download files after upgrade
-                if config.removeBackup:
-                    try:
-                        rmtree("UniqueBible-master")
-                    except:
-                        print("Failed to remove downloaded files.")
-                # prompt a restart
-                self.displayMessage("{0}  {1}".format(config.thisTranslation["message_done"], config.thisTranslation["message_restart"]))
-                self.openExternalFile("latest_changes.txt")
-            else:
-                self.displayMessage(config.thisTranslation["message_fail"])
-        else:
-            self.displayMessage(config.thisTranslation["message_fail"])
+            UpdateUtil.updateUniqueBibleApp()
 
     # manage download helper
     def downloadHelper(self, databaseInfo):
-        self.downloader = Downloader(self, databaseInfo)
-        self.downloader.show()
+        if config.isDownloading:
+            self.displayMessage(config.thisTranslation["previousDownloadIncomplete"])
+        else:
+            self.downloader = Downloader(self, databaseInfo)
+            self.downloader.show()
 
     def moduleInstalled(self, databaseInfo):
         self.downloader.close()
+        self.reloadControlPanel(False)
         self.displayMessage(config.thisTranslation["message_done"])
-
         # Update install History
         fileItems, cloudID, *_ = databaseInfo
         config.installHistory[fileItems[-1]] = cloudID
@@ -415,250 +452,6 @@ class MainWindow(QMainWindow):
     def moduleInstalledFailed(self, databaseInfo):
         self.downloader.close()
         self.displayMessage(config.thisTranslation["message_fail"])
-
-    # setup interface
-    def create_menu(self):
-        menu1 = self.menuBar().addMenu("&{0}".format(config.thisTranslation["menu1_app"]))
-        menu1.addAction(QAction(config.thisTranslation["menu1_fullScreen"], self, triggered=self.fullsizeWindow))
-        menu1.addAction(QAction(config.thisTranslation["menu1_resize"], self, triggered=self.twoThirdWindow))
-        menu1.addSeparator()
-        menu1.addAction(QAction(config.thisTranslation["menu1_topHalf"], self, triggered=self.halfScreenHeight))
-        menu1.addAction(QAction(config.thisTranslation["menu1_leftHalf"], self, triggered=self.halfScreenWidth))
-        menu1.addSeparator()
-        menu1.addAction(QAction(config.thisTranslation["menu1_setDefaultFont"], self, triggered=self.setDefaultFont))
-        menu1.addAction(QAction(config.thisTranslation["menu1_setChineseFont"], self, triggered=self.setChineseFont))
-        menu1.addAction(QAction(config.thisTranslation["menu1_setAbbreviations"], self, triggered=self.setBibleAbbreviations))
-        menu1.addAction(QAction(config.thisTranslation["menu1_tabNo"], self, triggered=self.setTabNumberDialog))
-        menu1.addAction(QAction(config.thisTranslation["menu1_setMyFavouriteBible"], self, triggered=self.openFavouriteBibleDialog))
-        menu1.addAction(QAction(config.thisTranslation["menu1_setMyLanguage"], self, triggered=self.openMyLanguageDialog))
-        lexiconMenu = menu1.addMenu(config.thisTranslation["menu1_selectDefaultLexicon"])
-        lexiconMenu.addAction(QAction(config.thisTranslation["menu1_StrongsHebrew"], self, triggered=self.openSelectDefaultStrongsHebrewLexiconDialog))
-        lexiconMenu.addAction(QAction(config.thisTranslation["menu1_StrongsGreek"], self, triggered=self.openSelectDefaultStrongsGreekLexiconDialog))
-        themeMenu = menu1.addMenu(config.thisTranslation["menu1_selectTheme"])
-        themeMenu.addAction(QAction(config.thisTranslation["menu1_default_theme"], self, triggered=self.setDefaultTheme))
-        themeMenu.addAction(QAction(config.thisTranslation["menu1_dark_theme"], self, triggered=self.setDarkTheme))
-        menu1.addAction(QAction(config.thisTranslation["menu1_moreConfig"], self, triggered=self.moreConfigOptionsDialog))
-        menu1.addSeparator()
-        if (not self.isMyTranslationAvailable() and not self.isOfficialTranslationAvailable()) or (self.isMyTranslationAvailable() and not myTranslation.translationLanguage == config.userLanguage) or (self.isOfficialTranslationAvailable() and not config.translationLanguage == config.userLanguage):
-            menu1.addAction(QAction(config.thisTranslation["menu1_translateInterface"], self, triggered=self.translateInterface))
-        menu1.addAction(QAction(config.thisTranslation["menu1_toogleInterface"], self, triggered=self.toogleInterfaceTranslation))
-        menu1.addSeparator()
-        menu1.addAction(QAction(config.thisTranslation["menu1_update"], self, triggered=self.updateUniqueBibleApp))
-        menu1.addSeparator()
-        menu1.addAction(QAction(config.thisTranslation["menu1_remoteControl"], self, shortcut="Ctrl+O", triggered=self.manageRemoteControl))
-        menu1.addSeparator()
-        appIcon = QIcon(os.path.join("htmlResources", "theText.png"))
-        quit_action = QAction(appIcon, config.thisTranslation["menu1_exit"], self, shortcut="Ctrl+Q", triggered=qApp.quit)
-        menu1.addAction(quit_action)
-
-        menu2 = self.menuBar().addMenu("&{0}".format(config.thisTranslation["menu2_view"]))
-        menu2.addAction(QAction(config.thisTranslation["menu2_all"], self, shortcut="Ctrl+J", triggered=self.setNoToolBar))
-        menu2.addAction(QAction(config.thisTranslation["menu2_topOnly"], self, shortcut="Ctrl+G", triggered=self.hideShowAdditionalToolBar))
-        menu2.addSeparator()
-        menu2.addAction(QAction(config.thisTranslation["menu2_top"], self, triggered=self.hideShowMainToolBar))
-        menu2.addAction(QAction(config.thisTranslation["menu2_second"], self, triggered=self.hideShowSecondaryToolBar))
-        menu2.addAction(QAction(config.thisTranslation["menu2_left"], self, triggered=self.hideShowLeftToolBar))
-        menu2.addAction(QAction(config.thisTranslation["menu2_right"], self, triggered=self.hideShowRightToolBar))
-        menu2.addSeparator()
-        menu2.addAction(QAction(config.thisTranslation["menu2_icons"], self, triggered=self.switchIconSize))
-        menu2.addSeparator()
-        menu2.addAction(QAction(config.thisTranslation["menu2_landscape"], self, shortcut="Ctrl+L", triggered=self.switchLandscapeMode))
-        menu2.addSeparator()
-        menu2.addAction(QAction(config.thisTranslation["menu2_study"], self, shortcut="Ctrl+W", triggered=self.parallel))
-        menu2.addAction(QAction(config.thisTranslation["menu2_bottom"], self, shortcut="Ctrl+T", triggered=self.instant))
-        menu2.addSeparator()
-        menu2.addAction(QAction(config.thisTranslation["menu2_hover"], self, shortcut="Ctrl+=", triggered=self.enableInstantButtonClicked))
-        menu2.addSeparator()
-        menu2.addAction(QAction(config.thisTranslation["menu2_larger"], self, shortcut="Ctrl++", triggered=self.largerFont))
-        menu2.addAction(QAction(config.thisTranslation["menu2_smaller"], self, shortcut="Ctrl+-", triggered=self.smallerFont))
-        menu2.addSeparator()
-        menu2.addAction(QAction(config.thisTranslation["menu2_format"], self, shortcut="Ctrl+P", triggered=self.enableParagraphButtonClicked))
-        menu2.addAction(QAction(config.thisTranslation["menu2_subHeadings"], self, triggered=self.enableSubheadingButtonClicked))
-
-        menu3 = self.menuBar().addMenu("&{0}".format(config.thisTranslation["menu3_history"]))
-        menu3.addAction(QAction(config.thisTranslation["menu3_main"], self, shortcut="Ctrl+'", triggered=self.mainHistoryButtonClicked))
-        menu3.addAction(QAction(config.thisTranslation["menu3_mainBack"], self, shortcut="Ctrl+[", triggered=self.back))
-        menu3.addAction(QAction(config.thisTranslation["menu3_mainForward"], self, shortcut="Ctrl+]", triggered=self.forward))
-        menu3.addSeparator()
-        menu3.addAction(QAction(config.thisTranslation["menu3_study"], self, shortcut = 'Ctrl+"', triggered=self.studyHistoryButtonClicked))
-        menu3.addAction(QAction(config.thisTranslation["menu3_studyBack"], self, shortcut="Ctrl+{", triggered=self.studyBack))
-        menu3.addAction(QAction(config.thisTranslation["menu3_studyForward"], self, shortcut="Ctrl+}", triggered=self.studyForward))
-        menu3.addSeparator()
-        menu3.addAction(QAction(config.thisTranslation["menu1_reload"], self, triggered=self.reloadCurrentRecord))
-
-        menu4 = self.menuBar().addMenu("&{0}".format(config.thisTranslation["menu4_further"]))
-        menu4.addAction(QAction(config.thisTranslation["menu4_book"], self, triggered=self.bookFeatures))
-        menu4.addAction(QAction(config.thisTranslation["menu4_chapter"], self, triggered=self.chapterFeatures))
-        menu4.addSeparator()
-        menu4.addAction(QAction(config.thisTranslation["menu4_next"], self, shortcut = 'Ctrl+>', triggered=self.nextMainChapter))
-        menu4.addAction(QAction(config.thisTranslation["menu4_previous"], self, shortcut = 'Ctrl+<', triggered=self.previousMainChapter))
-        menu4.addSeparator()
-        menu4.addAction(QAction(config.thisTranslation["menu4_indexes"], self, shortcut="Ctrl+.", triggered=self.runINDEX))
-        menu4.addAction(QAction(config.thisTranslation["menu4_commentary"], self, shortcut="Ctrl+Y", triggered=self.runCOMMENTARY))
-        menu4.addSeparator()
-        menu4.addAction(QAction(config.thisTranslation["menu4_traslations"], self, triggered=self.runTRANSLATION))
-        menu4.addAction(QAction(config.thisTranslation["menu4_discourse"], self, triggered=self.runDISCOURSE))
-        menu4.addAction(QAction(config.thisTranslation["menu4_words"], self, triggered=self.runWORDS))
-        menu4.addAction(QAction(config.thisTranslation["menu4_tdw"], self, shortcut="Ctrl+K", triggered=self.runCOMBO))
-        menu4.addSeparator()
-        menu4.addAction(QAction(config.thisTranslation["menu4_crossRef"], self, shortcut="Ctrl+R", triggered=self.runCROSSREFERENCE))
-        menu4.addAction(QAction(config.thisTranslation["menu4_tske"], self, shortcut="Ctrl+E", triggered=self.runTSKE))
-        menu4.addSeparator()
-        menu4.addAction(QAction(config.thisTranslation["menu4_compareAll"], self, shortcut="Ctrl+D", triggered=self.runCOMPARE))
-        menu4.addSeparator()
-        menu4.addAction(QAction(config.thisTranslation["menu4_moreComparison"], self, triggered=self.mainRefButtonClicked))
-
-        # check if books in favourite list exist
-        #for book in config.favouriteBooks:
-            #if not os.path.isfile(os.path.join(config.marvelData, "books", "{0}.book".format(book))):
-                #config.favouriteBooks.remove(book)
-
-        # remove an old book from favourite list if it is not installed
-        book = "Maps_ASB"
-        if not os.path.isfile(os.path.join(config.marvelData, "books", "{0}.book".format(book))) and book in config.favouriteBooks:
-            config.favouriteBooks.remove(book)
-
-        menu10 = self.menuBar().addMenu("&{0}".format(config.thisTranslation["menu10_books"]))
-        if config.favouriteBooks:
-            menu10.addAction(QAction(self.getBookName(config.favouriteBooks[0]), self, triggered=self.openFavouriteBook0))
-        if len(config.favouriteBooks) > 1:
-            menu10.addAction(QAction(self.getBookName(config.favouriteBooks[1]), self, triggered=self.openFavouriteBook1))
-        if len(config.favouriteBooks) > 2:
-            menu10.addAction(QAction(self.getBookName(config.favouriteBooks[2]), self, triggered=self.openFavouriteBook2))
-        if len(config.favouriteBooks) > 3:
-            menu10.addAction(QAction(self.getBookName(config.favouriteBooks[3]), self, triggered=self.openFavouriteBook3))
-        if len(config.favouriteBooks) > 4:
-            menu10.addAction(QAction(self.getBookName(config.favouriteBooks[4]), self, triggered=self.openFavouriteBook4))
-        if len(config.favouriteBooks) > 5:
-            menu10.addAction(QAction(self.getBookName(config.favouriteBooks[5]), self, triggered=self.openFavouriteBook5))
-        if len(config.favouriteBooks) > 6:
-            menu10.addAction(QAction(self.getBookName(config.favouriteBooks[6]), self, triggered=self.openFavouriteBook6))
-        if len(config.favouriteBooks) > 7:
-            menu10.addAction(QAction(self.getBookName(config.favouriteBooks[7]), self, triggered=self.openFavouriteBook7))
-        if len(config.favouriteBooks) > 8:
-            menu10.addAction(QAction(self.getBookName(config.favouriteBooks[8]), self, triggered=self.openFavouriteBook8))
-        if len(config.favouriteBooks) > 9:
-            menu10.addAction(QAction(self.getBookName(config.favouriteBooks[9]), self, triggered=self.openFavouriteBook9))
-        menu10.addSeparator()
-        menu10.addAction(QAction(config.thisTranslation["menu5_book"], self, triggered=self.openBookMenu))
-        menu10.addAction(QAction(config.thisTranslation["menu10_dialog"], self, triggered=self.openBookDialog))
-        menu10.addSeparator()
-        menu10.addAction(QAction(config.thisTranslation["menu10_addFavourite"], self, triggered=self.addFavouriteBookDialog))
-        menu10.addSeparator()
-        menu10.addAction(QAction(config.thisTranslation["menu10_bookFromImages"], self, triggered=self.createBookModuleFromImages))
-        menu10.addAction(QAction(config.thisTranslation["menu10_bookFromHtml"], self, triggered=self.createBookModuleFromHTML))
-        menu10.addAction(QAction(config.thisTranslation["menu10_bookFromNotes"], self, triggered=self.createBookModuleFromNotes))
-        menu10.addSeparator()
-        menu10.addAction(QAction(config.thisTranslation["menu10_clearBookHighlights"], self, triggered=self.clearBookHighlights))
-
-        menu5 = self.menuBar().addMenu("&{0}".format(config.thisTranslation["menu5_search"]))
-        menu5.addAction(QAction(config.thisTranslation["menu5_main"], self, shortcut="Ctrl+1", triggered=self.displaySearchBibleCommand))
-        menu5.addAction(QAction(config.thisTranslation["menu5_study"], self, shortcut="Ctrl+2", triggered=self.displaySearchStudyBibleCommand))
-        menu5.addAction(QAction(config.thisTranslation["menu5_bible"], self, triggered=self.displaySearchBibleMenu))
-        menu5.addSeparator()
-        menu5.addAction(QAction(config.thisTranslation["menu5_dictionary"], self, shortcut="Ctrl+3", triggered=self.searchCommandBibleDictionary))
-        menu5.addAction(QAction(config.thisTranslation["context1_dict"], self, triggered=self.searchDictionaryDialog))
-        menu5.addSeparator()
-        menu5.addAction(QAction(config.thisTranslation["menu5_encyclopedia"], self, shortcut="Ctrl+4", triggered=self.searchCommandBibleEncyclopedia))
-        menu5.addAction(QAction(config.thisTranslation["context1_encyclopedia"], self, triggered=self.searchEncyclopediaDialog))
-        menu5.addSeparator()
-        menu5.addAction(QAction(config.thisTranslation["menu5_book"], self, shortcut="Ctrl+5", triggered=self.displaySearchBookCommand))
-        menu5.addAction(QAction(config.thisTranslation["menu5_selectBook"], self, triggered=self.searchBookDialog))
-        menu5.addAction(QAction(config.thisTranslation["menu5_favouriteBook"], self, triggered=self.displaySearchFavBookCommand))
-        menu5.addAction(QAction(config.thisTranslation["menu5_allBook"], self, triggered=self.displaySearchAllBookCommand))
-        menu5.addSeparator()
-        menu5.addAction(QAction(config.thisTranslation["menu5_lastTopics"], self, shortcut="Ctrl+6", triggered=self.searchCommandBibleTopic))
-        menu5.addAction(QAction(config.thisTranslation["menu5_topics"], self, triggered=self.searchTopicDialog))
-        menu5.addAction(QAction(config.thisTranslation["menu5_allTopics"], self, triggered=self.searchCommandAllBibleTopic))
-        menu5.addSeparator()
-        menu5.addAction(QAction(config.thisTranslation["menu5_characters"], self, shortcut="Ctrl+7", triggered=self.searchCommandBibleCharacter))
-        menu5.addAction(QAction(config.thisTranslation["menu5_names"], self, shortcut="Ctrl+8", triggered=self.searchCommandBibleName))
-        menu5.addAction(QAction(config.thisTranslation["menu5_locations"], self, shortcut="Ctrl+9", triggered=self.searchCommandBibleLocation))
-        menu5.addSeparator()
-        menu5.addAction(QAction(config.thisTranslation["menu5_lexicon"], self, shortcut="Ctrl+0", triggered=self.searchCommandLexicon))
-        menu5.addSeparator()
-        menu5.addAction(QAction(config.thisTranslation["menu5_last3rdDict"], self, triggered=self.searchCommandThirdPartyDictionary))
-        menu5.addAction(QAction(config.thisTranslation["menu5_3rdDict"], self, triggered=self.search3rdDictionaryDialog))
-
-        menu6 = self.menuBar().addMenu("&{0}".format(config.thisTranslation["menu6_notes"]))
-        menu6.addAction(QAction(config.thisTranslation["menu6_mainChapter"], self, triggered=self.openMainChapterNote))
-        menu6.addAction(QAction(config.thisTranslation["menu6_studyChapter"], self, triggered=self.openStudyChapterNote))
-        menu6.addAction(QAction(config.thisTranslation["menu6_searchChapters"], self, triggered=self.searchCommandChapterNote))
-        menu6.addSeparator()
-        menu6.addAction(QAction(config.thisTranslation["menu6_mainVerse"], self, triggered=self.openMainVerseNote))
-        menu6.addAction(QAction(config.thisTranslation["menu6_studyVerse"], self, triggered=self.openStudyVerseNote))
-        menu6.addAction(QAction(config.thisTranslation["menu6_searchVerses"], self, triggered=self.searchCommandVerseNote))
-        menu6.addSeparator()
-        menu6.addAction(QAction(config.thisTranslation["menu10_clearBookHighlights"], self, triggered=self.clearNoteHighlights))
-
-        menu7 = self.menuBar().addMenu("&{0}".format(config.thisTranslation["menu7_topics"]))
-        menu7.addAction(QAction(config.thisTranslation["menu7_create"], self, shortcut="Ctrl+N", triggered=self.createNewNoteFile))
-        menu7.addAction(QAction(config.thisTranslation["menu7_open"], self, triggered=self.openTextFileDialog))
-        menu7.addSeparator()
-        menu7.addAction(QAction(config.thisTranslation["menu7_read"], self, triggered=self.externalFileButtonClicked))
-        menu7.addAction(QAction(config.thisTranslation["menu7_edit"], self, triggered=self.editExternalFileButtonClicked))
-        menu7.addSeparator()
-        menu7.addAction(QAction(config.thisTranslation["menu7_recent"], self, triggered=self.openExternalFileHistory))
-        menu7.addSeparator()
-        menu7.addAction(QAction(config.thisTranslation["menu7_paste"], self, shortcut="Ctrl+^", triggered=self.pasteFromClipboard))
-
-        menu11 = self.menuBar().addMenu("&{0}".format(config.thisTranslation["menu11_multimedia"]))
-        menu11.addAction(QAction(config.thisTranslation["menu11_images"], self, triggered=self.openImagesFolder))
-        menu11.addAction(QAction(config.thisTranslation["menu11_music"], self, triggered=self.openMusicFolder))
-        menu11.addAction(QAction(config.thisTranslation["menu11_video"], self, triggered=self.openVideoFolder))
-        menu11.addSeparator()
-        menu11.addAction(QAction(config.thisTranslation["menu11_setupDownload"], self, triggered=self.setupYouTube))
-        menu11.addAction(QAction(config.thisTranslation["menu11_youtube"], self, triggered=self.openYouTube))
-        menu11.addSeparator()
-        menu11.addAction(QAction("YouTube -> mp3", self, triggered=self.downloadMp3Dialog))
-        menu11.addAction(QAction("YouTube -> mp4", self, triggered=self.downloadMp4Dialog))
-
-        menu8 = self.menuBar().addMenu("&{0}".format(config.thisTranslation["menu8_resources"]))
-        menu8.addAction(QAction(config.thisTranslation["menu8_marvelData"], self, triggered=self.openMarvelDataFolder))
-        menu8.addSeparator()
-        menu8.addAction(QAction(config.thisTranslation["menu8_bibles"], self, triggered=self.installMarvelBibles))
-        menu8.addAction(QAction(config.thisTranslation["menu8_commentaries"], self, triggered=self.installMarvelCommentaries))
-        menu8.addAction(QAction(config.thisTranslation["menu8_datasets"], self, triggered=self.installMarvelDatasets))
-        menu8.addSeparator()
-        menu8.addAction(QAction(config.thisTranslation["menu8_plusLexicons"], self, triggered=self.importBBPlusLexiconInAFolder))
-        menu8.addAction(QAction(config.thisTranslation["menu8_plusDictionaries"], self, triggered=self.importBBPlusDictionaryInAFolder))
-        menu8.addSeparator()
-        menu8.addAction(QAction(config.thisTranslation["menu8_download3rdParty"], self, triggered=self.moreBooks))
-        menu8.addSeparator()
-        menu8.addAction(QAction(config.thisTranslation["menu8_3rdParty"], self, triggered=self.importModules))
-        menu8.addAction(QAction(config.thisTranslation["menu8_3rdPartyInFolder"], self, triggered=self.importModulesInFolder))
-        menu8.addAction(QAction(config.thisTranslation["menu8_settings"], self, triggered=self.importSettingsDialog))
-        menu8.addSeparator()
-        menu8.addAction(QAction(config.thisTranslation["menu8_tagFile"], self, triggered=self.tagFile))
-        menu8.addAction(QAction(config.thisTranslation["menu8_tagFiles"], self, triggered=self.tagFiles))
-        menu8.addAction(QAction(config.thisTranslation["menu8_tagFolder"], self, triggered=self.tagFolder))
-
-        if config.showInformation:
-            menu9 = self.menuBar().addMenu("&{0}".format(config.thisTranslation["menu9_information"]))
-            menu9.addAction(QAction(config.thisTranslation["menu1_wikiPages"], self, triggered=self.openUbaWiki))
-            menu9.addSeparator()
-            menu9.addAction(QAction("BibleTools.app", self, triggered=self.openBibleTools))
-            menu9.addAction(QAction("UniqueBible.app", self, triggered=self.openUniqueBible))
-            menu9.addAction(QAction("Marvel.bible", self, triggered=self.openMarvelBible))
-            menu9.addAction(QAction("BibleBento.com", self, triggered=self.openBibleBento))
-            menu9.addAction(QAction("OpenGNT.com", self, triggered=self.openOpenGNT))
-            menu9.addSeparator()
-            menu9.addAction(QAction("GitHub Repositories", self, triggered=self.openSource))
-            menu9.addAction(QAction("Unique Bible", self, triggered=self.openUniqueBibleSource))
-            menu9.addAction(QAction("Open Hebrew Bible", self, triggered=self.openHebrewBibleSource))
-            menu9.addAction(QAction("Open Greek New Testament", self, triggered=self.openOpenGNTSource))
-            #menu9.addSeparator()
-            #menu9.addAction(QAction(config.thisTranslation["menu9_credits"], self, triggered=self.openCredits))
-            menu9.addSeparator()
-            menu9.addAction(QAction("MarvelBible.Slack.com", self, triggered=self.goToSlack))
-            menu9.addAction(QAction(config.thisTranslation["menu9_contact"], self, triggered=self.contactEliranWong))
-            menu9.addSeparator()
-            menu9.addAction(QAction(config.thisTranslation["menu9_donate"], self, triggered=self.donateToUs))
-
-        # testing
-        if config.testing:
-            menu999 = self.menuBar().addMenu("&Testing")
-            menu999.addAction(QAction("Download Google Static Maps", self, triggered=self.downloadGoogleStaticMaps))
 
     def downloadGoogleStaticMaps(self):
         # https://developers.google.com/maps/documentation/maps-static/intro
@@ -676,7 +469,8 @@ class MainWindow(QMainWindow):
             scale = 2
             # get method of requests module
             # return response object
-            fullUrl =  "{0}center={1},{2}&zoom={3}&size={4}&key={5}&scale={6}&markers=color:red%7Clabel:{7}%7C{1},{2}".format(url, lat, lng, zoom, size, config.myGoogleApiKey, scale, location[0])
+            fullUrl = "{0}center={1},{2}&zoom={3}&size={4}&key={5}&scale={6}&markers=color:red%7Clabel:{7}%7C{1},{2}".format(
+                url, lat, lng, zoom, size, config.myGoogleApiKey, scale, location[0])
             r = requests.get(fullUrl)
             # wb mode is stand for write binary mode
             filepath = os.path.join("htmlResources", "images", "exlbl_largeHD", "{0}.png".format(entry))
@@ -686,901 +480,160 @@ class MainWindow(QMainWindow):
                 f.write(r.content)
         print("done")
 
-    def setupToolBar(self):
-        if config.toolBarIconFullSize:
-            self.setupToolBarFullIconSize()
-        else:
-            self.setupToolBarStandardIconSize()
-
-    def setupToolBarStandardIconSize(self):
-
-        textButtonStyle = "QPushButton {background-color: #151B54; color: white;} QPushButton:hover {background-color: #333972;} QPushButton:pressed { background-color: #515790;}"
-
-        self.firstToolBar = QToolBar()
-        self.firstToolBar.setWindowTitle(config.thisTranslation["bar1_title"])
-        self.firstToolBar.setContextMenuPolicy(Qt.PreventContextMenu)
-        self.addToolBar(self.firstToolBar)
-
-        self.mainTextMenuButton = QPushButton(self.verseReference("main")[0])
-        self.mainTextMenuButton.setToolTip(config.thisTranslation["bar1_menu"])
-        self.mainTextMenuButton.setStyleSheet(textButtonStyle)
-        self.mainTextMenuButton.clicked.connect(self.mainTextMenu)
-        self.firstToolBar.addWidget(self.mainTextMenuButton)
-
-        self.mainRefButton = QPushButton(self.verseReference("main")[1])
-        self.mainRefButton.setToolTip(config.thisTranslation["bar1_reference"])
-        self.mainRefButton.setStyleSheet(textButtonStyle)
-        self.mainRefButton.clicked.connect(self.mainRefButtonClicked)
-        self.firstToolBar.addWidget(self.mainRefButton)
-
-        openChapterNoteButton = QPushButton()
-        #openChapterNoteButton.setFixedSize(40, 40)
-        #openChapterNoteButton.setBaseSize(70, 70)
-        openChapterNoteButton.setToolTip(config.thisTranslation["bar1_chapterNotes"])
-        openChapterNoteButtonFile = os.path.join("htmlResources", "noteChapter.png")
-        openChapterNoteButton.setIcon(QIcon(openChapterNoteButtonFile))
-        openChapterNoteButton.clicked.connect(self.openMainChapterNote)
-        self.firstToolBar.addWidget(openChapterNoteButton)
-        #t = self.firstToolBar.addAction(QIcon(openChapterNoteButtonFile), "Main View Chapter Notes", self.openMainChapterNote)
-        #openChapterNoteButtonFile = os.path.join("htmlResources", "search.png")
-        #t.setIcon(QIcon(openChapterNoteButtonFile))
-
-        openVerseNoteButton = QPushButton()
-        openVerseNoteButton.setToolTip(config.thisTranslation["bar1_verseNotes"])
-        openVerseNoteButtonFile = os.path.join("htmlResources", "noteVerse.png")
-        openVerseNoteButton.setIcon(QIcon(openVerseNoteButtonFile))
-        openVerseNoteButton.clicked.connect(self.openMainVerseNote)
-        self.firstToolBar.addWidget(openVerseNoteButton)
-
-        searchBibleButton = QPushButton()
-        searchBibleButton.setToolTip(config.thisTranslation["bar1_searchBible"])
-        searchBibleButtonFile = os.path.join("htmlResources", "search.png")
-        searchBibleButton.setIcon(QIcon(searchBibleButtonFile))
-        searchBibleButton.clicked.connect(self.displaySearchBibleCommand)
-        self.firstToolBar.addWidget(searchBibleButton)
-
-        searchBibleButton = QPushButton()
-        searchBibleButton.setToolTip(config.thisTranslation["bar1_searchBibles"])
-        searchBibleButtonFile = os.path.join("htmlResources", "search_plus.png")
-        searchBibleButton.setIcon(QIcon(searchBibleButtonFile))
-        searchBibleButton.clicked.connect(self.displaySearchBibleMenu)
-        self.firstToolBar.addWidget(searchBibleButton)
-
-        self.firstToolBar.addSeparator()
-
-        self.textCommandLineEdit = QLineEdit()
-        self.textCommandLineEdit.setToolTip(config.thisTranslation["bar1_command"])
-        self.textCommandLineEdit.setMinimumWidth(100)
-        self.textCommandLineEdit.returnPressed.connect(self.textCommandEntered)
-        self.firstToolBar.addWidget(self.textCommandLineEdit)
-
-        self.firstToolBar.addSeparator()
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["bar1_toolbars"])
-        actionButtonFile = os.path.join("htmlResources", "toolbar.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.hideShowAdditionalToolBar)
-        self.firstToolBar.addWidget(actionButton)
-
-        self.addToolBarBreak()
-
-        self.studyBibleToolBar = QToolBar()
-        self.studyBibleToolBar.setWindowTitle(config.thisTranslation["bar2_title"])
-        self.studyBibleToolBar.setContextMenuPolicy(Qt.PreventContextMenu)
-        self.addToolBar(self.studyBibleToolBar)
-
-        self.studyTextMenuButton = QPushButton(self.verseReference("study")[0])
-        self.studyTextMenuButton.setToolTip(config.thisTranslation["bar2_menu"])
-        self.studyTextMenuButton.setStyleSheet(textButtonStyle)
-        self.studyTextMenuButton.clicked.connect(self.studyTextMenu)
-        self.studyBibleToolBar.addWidget(self.studyTextMenuButton)
-
-        self.studyRefButton = QPushButton(self.verseReference("study")[1])
-        self.studyRefButton.setToolTip(config.thisTranslation["bar2_reference"])
-        self.studyRefButton.setStyleSheet(textButtonStyle)
-        self.studyRefButton.clicked.connect(self.studyRefButtonClicked)
-        self.studyBibleToolBar.addWidget(self.studyRefButton)
-
-        openStudyChapterNoteButton = QPushButton()
-        openStudyChapterNoteButton.setToolTip(config.thisTranslation["bar2_chapterNotes"])
-        openStudyChapterNoteButtonFile = os.path.join("htmlResources", "noteChapter.png")
-        openStudyChapterNoteButton.setIcon(QIcon(openStudyChapterNoteButtonFile))
-        openStudyChapterNoteButton.clicked.connect(self.openStudyChapterNote)
-        self.studyBibleToolBar.addWidget(openStudyChapterNoteButton)
-
-        openStudyVerseNoteButton = QPushButton()
-        openStudyVerseNoteButton.setToolTip(config.thisTranslation["bar2_verseNotes"])
-        openStudyVerseNoteButtonFile = os.path.join("htmlResources", "noteVerse.png")
-        openStudyVerseNoteButton.setIcon(QIcon(openStudyVerseNoteButtonFile))
-        openStudyVerseNoteButton.clicked.connect(self.openStudyVerseNote)
-        self.studyBibleToolBar.addWidget(openStudyVerseNoteButton)
-
-        searchStudyBibleButton = QPushButton()
-        searchStudyBibleButton.setToolTip(config.thisTranslation["bar2_searchBible"])
-        searchStudyBibleButtonFile = os.path.join("htmlResources", "search.png")
-        searchStudyBibleButton.setIcon(QIcon(searchStudyBibleButtonFile))
-        searchStudyBibleButton.clicked.connect(self.displaySearchStudyBibleCommand)
-        self.studyBibleToolBar.addWidget(searchStudyBibleButton)
-
-        searchStudyBibleButton = QPushButton()
-        searchStudyBibleButton.setToolTip(config.thisTranslation["bar2_searchBibles"])
-        searchStudyBibleButtonFile = os.path.join("htmlResources", "search_plus.png")
-        searchStudyBibleButton.setIcon(QIcon(searchStudyBibleButtonFile))
-        searchStudyBibleButton.clicked.connect(self.displaySearchBibleMenu)
-        self.studyBibleToolBar.addWidget(searchStudyBibleButton)
-
-        self.enableSyncStudyWindowBibleButton = QPushButton()
-        self.enableSyncStudyWindowBibleButton.setToolTip(self.getSyncStudyWindowBibleDisplayToolTip())
-        enableSyncStudyWindowBibleButtonFile = os.path.join("htmlResources", self.getSyncStudyWindowBibleDisplay())
-        self.enableSyncStudyWindowBibleButton.setIcon(QIcon(enableSyncStudyWindowBibleButtonFile))
-        self.enableSyncStudyWindowBibleButton.clicked.connect(self.enableSyncStudyWindowBibleButtonClicked)
-        self.studyBibleToolBar.addWidget(self.enableSyncStudyWindowBibleButton)
-
-        self.secondToolBar = QToolBar()
-        self.secondToolBar.setWindowTitle(config.thisTranslation["bar2_title"])
-        self.secondToolBar.setContextMenuPolicy(Qt.PreventContextMenu)
-        self.addToolBar(self.secondToolBar)
-
-        self.enableStudyBibleButton = QPushButton()
-        self.enableStudyBibleButton.setToolTip(self.getStudyBibleDisplayToolTip())
-        enableStudyBibleButtonFile = os.path.join("htmlResources", self.getStudyBibleDisplay())
-        self.enableStudyBibleButton.setIcon(QIcon(enableStudyBibleButtonFile))
-        self.enableStudyBibleButton.clicked.connect(self.enableStudyBibleButtonClicked)
-        self.secondToolBar.addWidget(self.enableStudyBibleButton)
-
-        self.secondToolBar.addSeparator()
-
-        self.commentaryRefButton = QPushButton(self.verseReference("commentary"))
-        self.commentaryRefButton.setToolTip(config.thisTranslation["menu4_commentary"])
-        self.commentaryRefButton.setStyleSheet(textButtonStyle)
-        self.commentaryRefButton.clicked.connect(self.commentaryRefButtonClicked)
-        self.secondToolBar.addWidget(self.commentaryRefButton)
-
-        self.enableSyncCommentaryButton = QPushButton()
-        self.enableSyncCommentaryButton.setToolTip(self.getSyncCommentaryDisplayToolTip())
-        enableSyncCommentaryButtonFile = os.path.join("htmlResources", self.getSyncCommentaryDisplay())
-        self.enableSyncCommentaryButton.setIcon(QIcon(enableSyncCommentaryButtonFile))
-        self.enableSyncCommentaryButton.clicked.connect(self.enableSyncCommentaryButtonClicked)
-        self.secondToolBar.addWidget(self.enableSyncCommentaryButton)
-
-        self.secondToolBar.addSeparator()
-
-        openFileButton = QPushButton()
-        openFileButton.setToolTip(config.thisTranslation["menu10_dialog"])
-        openFileButtonFile = os.path.join("htmlResources", "open.png")
-        openFileButton.setIcon(QIcon(openFileButtonFile))
-        openFileButton.clicked.connect(self.openBookDialog)
-        self.secondToolBar.addWidget(openFileButton)
-
-        self.bookButton = QPushButton(config.book)
-        self.bookButton.setToolTip(config.thisTranslation["menu5_book"])
-        self.bookButton.setStyleSheet(textButtonStyle)
-        self.bookButton.clicked.connect(self.openBookMenu)
-        self.secondToolBar.addWidget(self.bookButton)
-
-        searchBookButton = QPushButton()
-        searchBookButton.setToolTip(config.thisTranslation["bar2_searchBooks"])
-        searchBookButtonFile = os.path.join("htmlResources", "search.png")
-        searchBookButton.setIcon(QIcon(searchBookButtonFile))
-        searchBookButton.clicked.connect(self.displaySearchBookCommand)
-        self.secondToolBar.addWidget(searchBookButton)
-
-        self.secondToolBar.addSeparator()
-
-        newFileButton = QPushButton()
-        newFileButton.setToolTip(config.thisTranslation["menu7_create"])
-        newFileButtonFile = os.path.join("htmlResources", "newfile.png")
-        newFileButton.setIcon(QIcon(newFileButtonFile))
-        newFileButton.clicked.connect(self.createNewNoteFile)
-        self.secondToolBar.addWidget(newFileButton)
-
-        openFileButton = QPushButton()
-        openFileButton.setToolTip(config.thisTranslation["menu7_open"])
-        openFileButtonFile = os.path.join("htmlResources", "open.png")
-        openFileButton.setIcon(QIcon(openFileButtonFile))
-        openFileButton.clicked.connect(self.openTextFileDialog)
-        self.secondToolBar.addWidget(openFileButton)
-
-        self.externalFileButton = QPushButton(self.getLastExternalFileName())
-        self.externalFileButton.setToolTip(config.thisTranslation["menu7_read"])
-        self.externalFileButton.setStyleSheet(textButtonStyle)
-        self.externalFileButton.clicked.connect(self.externalFileButtonClicked)
-        self.secondToolBar.addWidget(self.externalFileButton)
-
-        editExternalFileButton = QPushButton()
-        editExternalFileButton.setToolTip(config.thisTranslation["menu7_edit"])
-        editExternalFileButtonFile = os.path.join("htmlResources", "edit.png")
-        editExternalFileButton.setIcon(QIcon(editExternalFileButtonFile))
-        editExternalFileButton.clicked.connect(self.editExternalFileButtonClicked)
-        self.secondToolBar.addWidget(editExternalFileButton)
-
-        self.secondToolBar.addSeparator()
-
-        fontMinusButton = QPushButton()
-        fontMinusButton.setToolTip(config.thisTranslation["menu2_smaller"])
-        fontMinusButtonFile = os.path.join("htmlResources", "fontMinus.png")
-        fontMinusButton.setIcon(QIcon(fontMinusButtonFile))
-        fontMinusButton.clicked.connect(self.smallerFont)
-        self.secondToolBar.addWidget(fontMinusButton)
-
-        self.defaultFontButton = QPushButton("{0} {1}".format(config.font, config.fontSize))
-        self.defaultFontButton.setToolTip(config.thisTranslation["menu1_setDefaultFont"])
-        self.defaultFontButton.setStyleSheet(textButtonStyle)
-        self.defaultFontButton.clicked.connect(self.setDefaultFont)
-        self.secondToolBar.addWidget(self.defaultFontButton)
-
-        fontPlusButton = QPushButton()
-        fontPlusButton.setToolTip(config.thisTranslation["menu2_larger"])
-        fontPlusButtonFile = os.path.join("htmlResources", "fontPlus.png")
-        fontPlusButton.setIcon(QIcon(fontPlusButtonFile))
-        fontPlusButton.clicked.connect(self.largerFont)
-        self.secondToolBar.addWidget(fontPlusButton)
-
-        self.secondToolBar.addSeparator()
-
-        youtubeButton = QPushButton()
-        youtubeButton.setToolTip(config.thisTranslation["menu11_youtube"])
-        youtubeButtonFile = os.path.join("htmlResources", "youtube.png")
-        youtubeButton.setIcon(QIcon(youtubeButtonFile))
-        youtubeButton.clicked.connect(self.openYouTube)
-        self.secondToolBar.addWidget(youtubeButton)
-
-        self.secondToolBar.addSeparator()
-
-        reloadButton = QPushButton()
-        reloadButton.setToolTip(config.thisTranslation["menu1_reload"])
-        reloadButtonFile = os.path.join("htmlResources", "reload.png")
-        reloadButton.setIcon(QIcon(reloadButtonFile))
-        reloadButton.clicked.connect(self.reloadCurrentRecord)
-        self.secondToolBar.addWidget(reloadButton)
-
-        self.secondToolBar.addSeparator()
-
-        self.leftToolBar = QToolBar()
-        self.leftToolBar.setWindowTitle(config.thisTranslation["bar3_title"])
-        self.leftToolBar.setContextMenuPolicy(Qt.PreventContextMenu)
-        self.addToolBar(Qt.LeftToolBarArea, self.leftToolBar)
-
-        backButton = QPushButton()
-        backButton.setToolTip(config.thisTranslation["menu3_mainBack"])
-        leftButtonFile = os.path.join("htmlResources", "left.png")
-        backButton.setIcon(QIcon(leftButtonFile))
-        backButton.clicked.connect(self.back)
-        self.leftToolBar.addWidget(backButton)
-
-        mainHistoryButton = QPushButton()
-        mainHistoryButton.setToolTip(config.thisTranslation["menu3_main"])
-        mainHistoryButtonFile = os.path.join("htmlResources", "history.png")
-        mainHistoryButton.setIcon(QIcon(mainHistoryButtonFile))
-        mainHistoryButton.clicked.connect(self.mainHistoryButtonClicked)
-        self.leftToolBar.addWidget(mainHistoryButton)
-
-        forwardButton = QPushButton()
-        forwardButton.setToolTip(config.thisTranslation["menu3_mainForward"])
-        rightButtonFile = os.path.join("htmlResources", "right.png")
-        forwardButton.setIcon(QIcon(rightButtonFile))
-        forwardButton.clicked.connect(self.forward)
-        self.leftToolBar.addWidget(forwardButton)
-
-        self.leftToolBar.addSeparator()
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["bar3_pdf"])
-        actionButtonFile = os.path.join("htmlResources", "pdf.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.printMainPage)
-        self.leftToolBar.addWidget(actionButton)
-
-        self.leftToolBar.addSeparator()
-
-        self.enableParagraphButton = QPushButton()
-        self.enableParagraphButton.setToolTip(config.thisTranslation["menu2_format"])
-        enableParagraphButtonFile = os.path.join("htmlResources", self.getReadFormattedBibles())
-        self.enableParagraphButton.setIcon(QIcon(enableParagraphButtonFile))
-        self.enableParagraphButton.clicked.connect(self.enableParagraphButtonClicked)
-        self.leftToolBar.addWidget(self.enableParagraphButton)
-
-        self.enableSubheadingButton = QPushButton()
-        self.enableSubheadingButton.setToolTip(config.thisTranslation["menu2_subHeadings"])
-        enableSubheadingButtonFile = os.path.join("htmlResources", self.getAddSubheading())
-        self.enableSubheadingButton.setIcon(QIcon(enableSubheadingButtonFile))
-        self.enableSubheadingButton.clicked.connect(self.enableSubheadingButtonClicked)
-        self.leftToolBar.addWidget(self.enableSubheadingButton)
-
-        self.leftToolBar.addSeparator()
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["menu4_previous"])
-        actionButtonFile = os.path.join("htmlResources", "previousChapter.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.previousMainChapter)
-        self.leftToolBar.addWidget(actionButton)
-
-#        actionButton = QPushButton()
-#        actionButton.setToolTip(config.thisTranslation["bar1_reference"])
-#        actionButtonFile = os.path.join("htmlResources", "bible.png")
-#        actionButton.setIcon(QIcon(actionButtonFile))
-#        actionButton.clicked.connect(self.openMainChapter)
-#        self.leftToolBar.addWidget(actionButton)
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["menu4_next"])
-        actionButtonFile = os.path.join("htmlResources", "nextChapter.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.nextMainChapter)
-        self.leftToolBar.addWidget(actionButton)
-
-        self.leftToolBar.addSeparator()
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["menu4_compareAll"])
-        actionButtonFile = os.path.join("htmlResources", "compare_with.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.runCOMPARE)
-        self.leftToolBar.addWidget(actionButton)
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["menu4_moreComparison"])
-        actionButtonFile = os.path.join("htmlResources", "parallel_with.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.mainRefButtonClicked)
-        self.leftToolBar.addWidget(actionButton)
-
-        self.leftToolBar.addSeparator()
-
-        actionButton = QPushButton()
-        actionButton.setToolTip("Marvel Original Bible")
-        actionButtonFile = os.path.join("htmlResources", "original.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.runMOB)
-        self.leftToolBar.addWidget(actionButton)
-
-        actionButton = QPushButton()
-        actionButton.setToolTip("Marvel Interlinear Bible")
-        actionButtonFile = os.path.join("htmlResources", "interlinear.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.runMIB)
-        self.leftToolBar.addWidget(actionButton)
-
-        actionButton = QPushButton()
-        actionButton.setToolTip("Marvel Trilingual Bible")
-        actionButtonFile = os.path.join("htmlResources", "trilingual.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.runMTB)
-        self.leftToolBar.addWidget(actionButton)
-
-        actionButton = QPushButton()
-        actionButton.setToolTip("Marvel Parallel Bible")
-        actionButtonFile = os.path.join("htmlResources", "line.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.runMPB)
-        self.leftToolBar.addWidget(actionButton)
-
-        actionButton = QPushButton()
-        actionButton.setToolTip("Marvel Annotated Bible")
-        actionButtonFile = os.path.join("htmlResources", "annotated.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.runMAB)
-        self.leftToolBar.addWidget(actionButton)
-
-        self.leftToolBar.addSeparator()
-
-        self.rightToolBar = QToolBar()
-        self.rightToolBar.setWindowTitle(config.thisTranslation["bar4_title"])
-        self.rightToolBar.setContextMenuPolicy(Qt.PreventContextMenu)
-        self.addToolBar(Qt.RightToolBarArea, self.rightToolBar)
-
-        studyBackButton = QPushButton()
-        studyBackButton.setToolTip(config.thisTranslation["menu3_studyBack"])
-        leftButtonFile = os.path.join("htmlResources", "left.png")
-        studyBackButton.setIcon(QIcon(leftButtonFile))
-        studyBackButton.clicked.connect(self.studyBack)
-        self.rightToolBar.addWidget(studyBackButton)
-
-        studyHistoryButton = QPushButton()
-        studyHistoryButton.setToolTip(config.thisTranslation["menu3_study"])
-        studyHistoryButtonFile = os.path.join("htmlResources", "history.png")
-        studyHistoryButton.setIcon(QIcon(studyHistoryButtonFile))
-        studyHistoryButton.clicked.connect(self.studyHistoryButtonClicked)
-        self.rightToolBar.addWidget(studyHistoryButton)
-
-        studyForwardButton = QPushButton()
-        studyForwardButton.setToolTip(config.thisTranslation["menu3_studyForward"])
-        rightButtonFile = os.path.join("htmlResources", "right.png")
-        studyForwardButton.setIcon(QIcon(rightButtonFile))
-        studyForwardButton.clicked.connect(self.studyForward)
-        self.rightToolBar.addWidget(studyForwardButton)
-
-        self.rightToolBar.addSeparator()
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["bar3_pdf"])
-        actionButtonFile = os.path.join("htmlResources", "pdf.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.printStudyPage)
-        self.rightToolBar.addWidget(actionButton)
-
-        self.rightToolBar.addSeparator()
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["menu4_indexes"])
-        actionButtonFile = os.path.join("htmlResources", "indexes.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.runINDEX)
-        self.rightToolBar.addWidget(actionButton)
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["menu4_commentary"])
-        actionButtonFile = os.path.join("htmlResources", "commentary.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.runCOMMENTARY)
-        self.rightToolBar.addWidget(actionButton)
-
-        self.rightToolBar.addSeparator()
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["menu4_crossRef"])
-        actionButtonFile = os.path.join("htmlResources", "cross_reference.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.runCROSSREFERENCE)
-        self.rightToolBar.addWidget(actionButton)
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["menu4_tske"])
-        actionButtonFile = os.path.join("htmlResources", "treasure.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.runTSKE)
-        self.rightToolBar.addWidget(actionButton)
-
-        self.rightToolBar.addSeparator()
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["menu4_traslations"])
-        actionButtonFile = os.path.join("htmlResources", "translations.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.runTRANSLATION)
-        self.rightToolBar.addWidget(actionButton)
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["menu4_discourse"])
-        actionButtonFile = os.path.join("htmlResources", "discourse.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.runDISCOURSE)
-        self.rightToolBar.addWidget(actionButton)
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["menu4_words"])
-        actionButtonFile = os.path.join("htmlResources", "words.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.runWORDS)
-        self.rightToolBar.addWidget(actionButton)
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["menu4_tdw"])
-        actionButtonFile = os.path.join("htmlResources", "combo.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.runCOMBO)
-        self.rightToolBar.addWidget(actionButton)
-
-        self.rightToolBar.addSeparator()
-
-        actionButton = QPushButton()
-        actionButton.setToolTip(config.thisTranslation["menu2_landscape"])
-        actionButtonFile = os.path.join("htmlResources", "portrait.png")
-        actionButton.setIcon(QIcon(actionButtonFile))
-        actionButton.clicked.connect(self.switchLandscapeMode)
-        self.rightToolBar.addWidget(actionButton)
-
-        parallelButton = QPushButton()
-        parallelButton.setToolTip(config.thisTranslation["menu2_study"])
-        parallelButtonFile = os.path.join("htmlResources", "parallel.png")
-        parallelButton.setIcon(QIcon(parallelButtonFile))
-        parallelButton.clicked.connect(self.parallel)
-        self.rightToolBar.addWidget(parallelButton)
-
-        self.rightToolBar.addSeparator()
-
-        self.enableInstantButton = QPushButton()
-        self.enableInstantButton.setToolTip(config.thisTranslation["menu2_hover"])
-        enableInstantButtonFile = os.path.join("htmlResources", self.getInstantInformation())
-        self.enableInstantButton.setIcon(QIcon(enableInstantButtonFile))
-        self.enableInstantButton.clicked.connect(self.enableInstantButtonClicked)
-        self.rightToolBar.addWidget(self.enableInstantButton)
-
-        instantButton = QPushButton()
-        instantButton.setToolTip(config.thisTranslation["menu2_bottom"])
-        instantButtonFile = os.path.join("htmlResources", "lightning.png")
-        instantButton.setIcon(QIcon(instantButtonFile))
-        instantButton.clicked.connect(self.instant)
-        self.rightToolBar.addWidget(instantButton)
-
-        self.rightToolBar.addSeparator()
-
-    def setupToolBarFullIconSize(self):
-
-        textButtonStyle = "QPushButton {background-color: #151B54; color: white;} QPushButton:hover {background-color: #333972;} QPushButton:pressed { background-color: #515790;}"
-
-        self.firstToolBar = QToolBar()
-        self.firstToolBar.setWindowTitle(config.thisTranslation["bar1_title"])
-        self.firstToolBar.setContextMenuPolicy(Qt.PreventContextMenu)
-        self.addToolBar(self.firstToolBar)
-
-        self.mainTextMenuButton = QPushButton(self.verseReference("main")[0])
-        self.mainTextMenuButton.setToolTip(config.thisTranslation["bar1_menu"])
-        self.mainTextMenuButton.setStyleSheet(textButtonStyle)
-        self.mainTextMenuButton.clicked.connect(self.mainTextMenu)
-        self.firstToolBar.addWidget(self.mainTextMenuButton)
-
-        self.mainRefButton = QPushButton(self.verseReference("main")[1])
-        self.mainRefButton.setToolTip(config.thisTranslation["bar1_reference"])
-        self.mainRefButton.setStyleSheet(textButtonStyle)
-        self.mainRefButton.clicked.connect(self.mainRefButtonClicked)
-        self.firstToolBar.addWidget(self.mainRefButton)
-
-        iconFile = os.path.join("htmlResources", "noteChapter.png")
-        self.firstToolBar.addAction(QIcon(iconFile), config.thisTranslation["bar1_chapterNotes"], self.openMainChapterNote)
-
-        iconFile = os.path.join("htmlResources", "noteVerse.png")
-        self.firstToolBar.addAction(QIcon(iconFile), config.thisTranslation["bar1_verseNotes"], self.openMainVerseNote)
-
-        iconFile = os.path.join("htmlResources", "search.png")
-        self.firstToolBar.addAction(QIcon(iconFile), config.thisTranslation["bar1_searchBible"], self.displaySearchBibleCommand)
-
-        iconFile = os.path.join("htmlResources", "search_plus.png")
-        self.firstToolBar.addAction(QIcon(iconFile), config.thisTranslation["bar1_searchBibles"], self.displaySearchBibleMenu)
-
-        self.firstToolBar.addSeparator()
-
-        self.textCommandLineEdit = QLineEdit()
-        self.textCommandLineEdit.setToolTip(config.thisTranslation["bar1_command"])
-        self.textCommandLineEdit.setMinimumWidth(100)
-        self.textCommandLineEdit.returnPressed.connect(self.textCommandEntered)
-        self.firstToolBar.addWidget(self.textCommandLineEdit)
-
-        self.firstToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "toolbar.png")
-        self.firstToolBar.addAction(QIcon(iconFile), config.thisTranslation["bar1_toolbars"], self.hideShowAdditionalToolBar)
-
-        self.addToolBarBreak()
-
-        self.studyBibleToolBar = QToolBar()
-        self.studyBibleToolBar.setWindowTitle(config.thisTranslation["bar2_title"])
-        self.studyBibleToolBar.setContextMenuPolicy(Qt.PreventContextMenu)
-        self.addToolBar(self.studyBibleToolBar)
-
-        self.studyTextMenuButton = QPushButton(self.verseReference("study")[0])
-        self.studyTextMenuButton.setToolTip(config.thisTranslation["bar2_menu"])
-        self.studyTextMenuButton.setStyleSheet(textButtonStyle)
-        self.studyTextMenuButton.clicked.connect(self.studyTextMenu)
-        self.studyBibleToolBar.addWidget(self.studyTextMenuButton)
-
-        self.studyRefButton = QPushButton(self.verseReference("study")[1])
-        self.studyRefButton.setToolTip(config.thisTranslation["bar2_reference"])
-        self.studyRefButton.setStyleSheet(textButtonStyle)
-        self.studyRefButton.clicked.connect(self.studyRefButtonClicked)
-        self.studyBibleToolBar.addWidget(self.studyRefButton)
-
-        iconFile = os.path.join("htmlResources", "noteChapter.png")
-        self.studyBibleToolBar.addAction(QIcon(iconFile), config.thisTranslation["bar2_chapterNotes"], self.openStudyChapterNote)
-
-        iconFile = os.path.join("htmlResources", "noteVerse.png")
-        self.studyBibleToolBar.addAction(QIcon(iconFile), config.thisTranslation["bar2_verseNotes"], self.openStudyVerseNote)
-
-        iconFile = os.path.join("htmlResources", "search.png")
-        self.studyBibleToolBar.addAction(QIcon(iconFile), config.thisTranslation["bar2_searchBible"], self.displaySearchStudyBibleCommand)
-
-        iconFile = os.path.join("htmlResources", "search_plus.png")
-        self.studyBibleToolBar.addAction(QIcon(iconFile), config.thisTranslation["bar2_searchBibles"], self.displaySearchBibleMenu)
-
-        iconFile = os.path.join("htmlResources", self.getSyncStudyWindowBibleDisplay())
-        self.enableSyncStudyWindowBibleButton = self.studyBibleToolBar.addAction(QIcon(iconFile), self.getSyncStudyWindowBibleDisplayToolTip(), self.enableSyncStudyWindowBibleButtonClicked)
-
-        self.secondToolBar = QToolBar()
-        self.secondToolBar.setWindowTitle(config.thisTranslation["bar2_title"])
-        self.secondToolBar.setContextMenuPolicy(Qt.PreventContextMenu)
-        self.addToolBar(self.secondToolBar)
-
-        iconFile = os.path.join("htmlResources", self.getStudyBibleDisplay())
-        self.enableStudyBibleButton = self.secondToolBar.addAction(QIcon(iconFile), self.getStudyBibleDisplayToolTip(), self.enableStudyBibleButtonClicked)
-
-        self.secondToolBar.addSeparator()
-
-        self.commentaryRefButton = QPushButton(self.verseReference("commentary"))
-        self.commentaryRefButton.setToolTip(config.thisTranslation["menu4_commentary"])
-        self.commentaryRefButton.setStyleSheet(textButtonStyle)
-        self.commentaryRefButton.clicked.connect(self.commentaryRefButtonClicked)
-        self.secondToolBar.addWidget(self.commentaryRefButton)
-
-        iconFile = os.path.join("htmlResources", self.getSyncCommentaryDisplay())
-        self.enableSyncCommentaryButton = self.secondToolBar.addAction(QIcon(iconFile), self.getSyncCommentaryDisplayToolTip(), self.enableSyncCommentaryButtonClicked)
-
-        self.secondToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "open.png")
-        self.secondToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu10_dialog"], self.openBookDialog)
-
-        self.bookButton = QPushButton(config.book)
-        self.bookButton.setToolTip(config.thisTranslation["menu5_book"])
-        self.bookButton.setStyleSheet(textButtonStyle)
-        self.bookButton.clicked.connect(self.openBookMenu)
-        self.secondToolBar.addWidget(self.bookButton)
-
-        iconFile = os.path.join("htmlResources", "search.png")
-        self.secondToolBar.addAction(QIcon(iconFile), config.thisTranslation["bar2_searchBooks"], self.displaySearchBookCommand)
-
-        self.secondToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "newfile.png")
-        self.secondToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu7_create"], self.createNewNoteFile)
-
-        iconFile = os.path.join("htmlResources", "open.png")
-        self.secondToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu7_open"], self.openTextFileDialog)
-
-        self.externalFileButton = QPushButton(self.getLastExternalFileName())
-        self.externalFileButton.setToolTip(config.thisTranslation["menu7_read"])
-        self.externalFileButton.setStyleSheet(textButtonStyle)
-        self.externalFileButton.clicked.connect(self.externalFileButtonClicked)
-        self.secondToolBar.addWidget(self.externalFileButton)
-
-        iconFile = os.path.join("htmlResources", "edit.png")
-        self.secondToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu7_edit"], self.editExternalFileButtonClicked)
-
-        self.secondToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "fontMinus.png")
-        self.secondToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu2_smaller"], self.smallerFont)
-
-        self.defaultFontButton = QPushButton("{0} {1}".format(config.font, config.fontSize))
-        self.defaultFontButton.setToolTip(config.thisTranslation["menu1_setDefaultFont"])
-        self.defaultFontButton.setStyleSheet(textButtonStyle)
-        self.defaultFontButton.clicked.connect(self.setDefaultFont)
-        self.secondToolBar.addWidget(self.defaultFontButton)
-
-        iconFile = os.path.join("htmlResources", "fontPlus.png")
-        self.secondToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu2_larger"], self.largerFont)
-
-        self.secondToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "youtube.png")
-        self.secondToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu11_youtube"], self.openYouTube)
-
-        self.secondToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "reload.png")
-        self.secondToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu1_reload"], self.reloadCurrentRecord)
-
-        self.secondToolBar.addSeparator()
-
-        self.leftToolBar = QToolBar()
-        self.leftToolBar.setWindowTitle(config.thisTranslation["bar3_title"])
-        self.leftToolBar.setContextMenuPolicy(Qt.PreventContextMenu)
-        self.addToolBar(Qt.LeftToolBarArea, self.leftToolBar)
-
-        iconFile = os.path.join("htmlResources", "left.png")
-        self.leftToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu3_mainBack"], self.back)
-
-        iconFile = os.path.join("htmlResources", "history.png")
-        self.leftToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu3_main"], self.mainHistoryButtonClicked)
-
-        iconFile = os.path.join("htmlResources", "right.png")
-        self.leftToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu3_mainForward"], self.forward)
-
-        self.leftToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "pdf.png")
-        self.leftToolBar.addAction(QIcon(iconFile), config.thisTranslation["bar3_pdf"], self.printMainPage)
-
-        self.leftToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", self.getReadFormattedBibles())
-        self.enableParagraphButton = self.leftToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu2_format"], self.enableParagraphButtonClicked)
-
-        iconFile = os.path.join("htmlResources", self.getAddSubheading())
-        self.enableSubheadingButton = self.leftToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu2_subHeadings"], self.enableSubheadingButtonClicked)
-
-        self.leftToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "previousChapter.png")
-        self.leftToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu4_previous"], self.previousMainChapter)
-
-#        actionButton = QPushButton()
-#        actionButton.setToolTip(config.thisTranslation["bar1_reference"])
-#        actionButtonFile = os.path.join("htmlResources", "bible.png")
-#        actionButton.setIcon(QIcon(actionButtonFile))
-#        actionButton.clicked.connect(self.openMainChapter)
-#        self.leftToolBar.addWidget(actionButton)
-
-        iconFile = os.path.join("htmlResources", "nextChapter.png")
-        self.leftToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu4_next"], self.nextMainChapter)
-
-        self.leftToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "compare_with.png")
-        self.leftToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu4_compareAll"], self.runCOMPARE)
-
-        iconFile = os.path.join("htmlResources", "parallel_with.png")
-        self.leftToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu4_moreComparison"], self.mainRefButtonClicked)
-
-        self.leftToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "original.png")
-        self.leftToolBar.addAction(QIcon(iconFile), "Marvel Original Bible", self.runMOB)
-
-        iconFile = os.path.join("htmlResources", "interlinear.png")
-        self.leftToolBar.addAction(QIcon(iconFile), "Marvel Interlinear Bible", self.runMIB)
-
-        iconFile = os.path.join("htmlResources", "trilingual.png")
-        self.leftToolBar.addAction(QIcon(iconFile), "Marvel Trilingual Bible", self.runMTB)
-
-        iconFile = os.path.join("htmlResources", "line.png")
-        self.leftToolBar.addAction(QIcon(iconFile), "Marvel Parallel Bible", self.runMPB)
-
-        iconFile = os.path.join("htmlResources", "annotated.png")
-        self.leftToolBar.addAction(QIcon(iconFile), "Marvel Annotated Bible", self.runMAB)
-
-        self.leftToolBar.addSeparator()
-
-        self.rightToolBar = QToolBar()
-        self.rightToolBar.setWindowTitle(config.thisTranslation["bar4_title"])
-        self.rightToolBar.setContextMenuPolicy(Qt.PreventContextMenu)
-        self.addToolBar(Qt.RightToolBarArea, self.rightToolBar)
-
-        iconFile = os.path.join("htmlResources", "left.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu3_studyBack"], self.studyBack)
-
-        iconFile = os.path.join("htmlResources", "history.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu3_study"], self.studyHistoryButtonClicked)
-
-        iconFile = os.path.join("htmlResources", "right.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu3_studyForward"], self.studyForward)
-
-        self.rightToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "pdf.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["bar3_pdf"], self.printStudyPage)
-
-        self.rightToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "indexes.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu4_indexes"], self.runINDEX)
-
-        iconFile = os.path.join("htmlResources", "commentary.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu4_commentary"], self.runCOMMENTARY)
-
-        self.rightToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "cross_reference.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu4_crossRef"], self.runCROSSREFERENCE)
-
-        iconFile = os.path.join("htmlResources", "treasure.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu4_tske"], self.runTSKE)
-
-        self.rightToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "translations.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu4_traslations"], self.runTRANSLATION)
-
-        iconFile = os.path.join("htmlResources", "discourse.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu4_discourse"], self.runDISCOURSE)
-
-        iconFile = os.path.join("htmlResources", "words.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu4_words"], self.runWORDS)
-
-        iconFile = os.path.join("htmlResources", "combo.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu4_tdw"], self.runCOMBO)
-
-        self.rightToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", "portrait.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu2_landscape"], self.switchLandscapeMode)
-
-        iconFile = os.path.join("htmlResources", "parallel.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu2_study"], self.parallel)
-
-        self.rightToolBar.addSeparator()
-
-        iconFile = os.path.join("htmlResources", self.getInstantInformation())
-        self.enableInstantButton = self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu2_hover"], self.enableInstantButtonClicked)
-
-        iconFile = os.path.join("htmlResources", "lightning.png")
-        self.rightToolBar.addAction(QIcon(iconFile), config.thisTranslation["menu2_bottom"], self.instant)
-
-        self.rightToolBar.addSeparator()
-
     def setStudyBibleToolBar(self):
-        if config.openBibleInMainViewOnly:
-            self.studyBibleToolBar.hide()
-        else:
-            self.studyBibleToolBar.show()
+        if not config.noStudyBibleToolbar and hasattr(self, "studyBibleToolBar"):
+            if config.openBibleInMainViewOnly:
+                self.studyBibleToolBar.hide()
+            else:
+                self.studyBibleToolBar.show()
 
     # install marvel data
     def installMarvelBibles(self):
-        items = [self.bibleInfo[bible][-1] for bible in self.bibleInfo.keys() if not os.path.isfile(os.path.join(*self.bibleInfo[bible][0])) or self.isNewerAvailable(self.bibleInfo[bible][0][-1])]
+        items = [self.bibleInfo[bible][-1] for bible in self.bibleInfo.keys() if
+                 not os.path.isfile(os.path.join(*self.bibleInfo[bible][0])) or self.isNewerAvailable(
+                     self.bibleInfo[bible][0][-1])]
         if not items:
             items = ["[All Installed]"]
         item, ok = QInputDialog.getItem(self, "UniqueBible",
-                config.thisTranslation["menu8_bibles"], items, 0, False)
+                                        config.thisTranslation["menu8_bibles"], items, 0, False)
         if ok and item and not item == "[All Installed]":
             for key, value in self.bibleInfo.items():
                 if item == value[-1]:
                     self.downloadHelper(self.bibleInfo[key])
                     break
 
-
     def installMarvelCommentaries(self):
         commentaries = {
-            "Notes on the Old and New Testaments (Barnes) [26 vol.]": ((config.marvelData, "commentaries", "cBarnes.commentary"), "13uxButnFH2NRUV-YuyRZYCeh1GzWqO5J"),
-            "Commentary on the Old and New Testaments (Benson) [5 vol.]": ((config.marvelData, "commentaries", "cBenson.commentary"), "1MSRUHGDilogk7_iZHVH5GWkPyf8edgjr"),
-            "Biblical Illustrator (Exell) [58 vol.]": ((config.marvelData, "commentaries", "cBI.commentary"), "1DUATP_0M7SwBqsjf20YvUDblg3_sOt2F"),
-            "Complete Summary of the Bible (Brooks) [2 vol.]": ((config.marvelData, "commentaries", "cBrooks.commentary"), "1pZNRYE6LqnmfjUem4Wb_U9mZ7doREYUm"),
-            "John Calvin's Commentaries (Calvin) [22 vol.]": ((config.marvelData, "commentaries", "cCalvin.commentary"), "1FUZGK9n54aXvqMAi3-2OZDtRSz9iZh-j"),
-            "Cambridge Bible for Schools and Colleges (Cambridge) [57 vol.]": ((config.marvelData, "commentaries", "cCBSC.commentary"), "1IxbscuAMZg6gQIjzMlVkLtJNDQ7IzTh6"),
-            "Critical And Exegetical Commentary on the NT (Meyer) [20 vol.]": ((config.marvelData, "commentaries", "cCECNT.commentary"), "1MpBx7z6xyJYISpW_7Dq-Uwv0rP8_Mi-r"),
-            "Cambridge Greek Testament for Schools and Colleges (Cambridge) [21 vol.]": ((config.marvelData, "commentaries", "cCGrk.commentary"), "1Jf51O0R911Il0V_SlacLQDNPaRjumsbD"),
-            "Church Pulpit Commentary (Nisbet) [12 vol.]": ((config.marvelData, "commentaries", "cCHP.commentary"), "1dygf2mz6KN_ryDziNJEu47-OhH8jK_ff"),
-            "Commentary on the Bible (Clarke) [6 vol.]": ((config.marvelData, "commentaries", "cClarke.commentary"), "1ZVpLAnlSmBaT10e5O7pljfziLUpyU4Dq"),
-            "College Press Bible Study Textbook Series (College) [59 vol.]": ((config.marvelData, "commentaries", "cCPBST.commentary"), "14zueTf0ioI-AKRo_8GK8PDRKael_kB1U"),
-            "Expositor's Bible Commentary (Nicoll) [49 vol.]": ((config.marvelData, "commentaries", "cEBC.commentary"), "1UA3tdZtIKQEx-xmXtM_SO1k8S8DKYm6r"),
-            "Commentary for English Readers (Ellicott) [8 vol.]": ((config.marvelData, "commentaries", "cECER.commentary"), "1sCJc5xuxqDDlmgSn2SFWTRbXnHSKXeh_"),
-            "Expositor's Greek New Testament (Nicoll) [5 vol.]": ((config.marvelData, "commentaries", "cEGNT.commentary"), "1ZvbWnuy2wwllt-s56FUfB2bS2_rZoiPx"),
-            "Greek Testament Commentary (Alford) [4 vol.]": ((config.marvelData, "commentaries", "cGCT.commentary"), "1vK53UO2rggdcfcDjH6mWXAdYti4UbzUt"),
-            "Exposition of the Entire Bible (Gill) [9 vol.]": ((config.marvelData, "commentaries", "cGill.commentary"), "1O5jnHLsmoobkCypy9zJC-Sw_Ob-3pQ2t"),
-            "Exposition of the Old and New Testaments (Henry) [6 vol.]": ((config.marvelData, "commentaries", "cHenry.commentary"), "1m-8cM8uZPN-fLVcC-a9mhL3VXoYJ5Ku9"),
-            "Horæ Homileticæ (Simeon) [21 vol.]": ((config.marvelData, "commentaries", "cHH.commentary"), "1RwKN1igd1RbN7phiJDiLPhqLXdgOR0Ms"),
-            "International Critical Commentary, NT (1896-1929) [16 vol.]": ((config.marvelData, "commentaries", "cICCNT.commentary"), "1QxrzeeZYc0-GNwqwdDe91H4j1hGSOG6t"),
-            "Jamieson, Fausset, and Brown Commentary (JFB) [6 vol.]": ((config.marvelData, "commentaries", "cJFB.commentary"), "1NT02QxoLeY3Cj0uA_5142P5s64RkRlpO"),
-            "Commentary on the Old Testament (Keil & Delitzsch) [10 vol.]": ((config.marvelData, "commentaries", "cKD.commentary"), "1rFFDrdDMjImEwXkHkbh7-vX3g4kKUuGV"),
-            "Commentary on the Holy Scriptures: Critical, Doctrinal, and Homiletical (Lange) [25 vol.]": ((config.marvelData, "commentaries", "cLange.commentary"), "1_PrTT71aQN5LJhbwabx-kjrA0vg-nvYY"),
-            "Expositions of Holy Scripture (MacLaren) [32 vol.]": ((config.marvelData, "commentaries", "cMacL.commentary"), "1p32F9MmQ2wigtUMdCU-biSrRZWrFLWJR"),
-            "Preacher's Complete Homiletical Commentary (Exell) [37 vol.]": ((config.marvelData, "commentaries", "cPHC.commentary"), "1xTkY_YFyasN7Ks9me3uED1HpQnuYI8BW"),
-            "Pulpit Commentary (Spence) [23 vol.]": ((config.marvelData, "commentaries", "cPulpit.commentary"), "1briSh0oDhUX7QnW1g9oM3c4VWiThkWBG"),
-            "Word Pictures in the New Testament (Robertson) [6 vol.]": ((config.marvelData, "commentaries", "cRob.commentary"), "17VfPe4wsnEzSbxL5Madcyi_ubu3iYVkx"),
-            "Spurgeon's Expositions on the Bible (Spurgeon) [3 vol.]": ((config.marvelData, "commentaries", "cSpur.commentary"), "1OVsqgHVAc_9wJBCcz6PjsNK5v9GfeNwp"),
-            "Word Studies in the New Testament (Vincent) [4 vol.]": ((config.marvelData, "commentaries", "cVincent.commentary"), "1ZZNnCo5cSfUzjdEaEvZ8TcbYa4OKUsox"),
-            "John Wesley's Notes on the Whole Bible (Wesley) [3 vol.]": ((config.marvelData, "commentaries", "cWesley.commentary"), "1rerXER1ZDn4e1uuavgFDaPDYus1V-tS5"),
-            "Commentary on the Old and New Testaments (Whedon) [14 vol.]": ((config.marvelData, "commentaries", "cWhedon.commentary"), "1FPJUJOKodFKG8wsNAvcLLc75QbM5WO-9"),
+            "Notes on the Old and New Testaments (Barnes) [26 vol.]": (
+            (config.marvelData, "commentaries", "cBarnes.commentary"), "13uxButnFH2NRUV-YuyRZYCeh1GzWqO5J"),
+            "Commentary on the Old and New Testaments (Benson) [5 vol.]": (
+            (config.marvelData, "commentaries", "cBenson.commentary"), "1MSRUHGDilogk7_iZHVH5GWkPyf8edgjr"),
+            "Biblical Illustrator (Exell) [58 vol.]": (
+            (config.marvelData, "commentaries", "cBI.commentary"), "1DUATP_0M7SwBqsjf20YvUDblg3_sOt2F"),
+            "Complete Summary of the Bible (Brooks) [2 vol.]": (
+            (config.marvelData, "commentaries", "cBrooks.commentary"), "1pZNRYE6LqnmfjUem4Wb_U9mZ7doREYUm"),
+            "John Calvin's Commentaries (Calvin) [22 vol.]": (
+            (config.marvelData, "commentaries", "cCalvin.commentary"), "1FUZGK9n54aXvqMAi3-2OZDtRSz9iZh-j"),
+            "Cambridge Bible for Schools and Colleges (Cambridge) [57 vol.]": (
+            (config.marvelData, "commentaries", "cCBSC.commentary"), "1IxbscuAMZg6gQIjzMlVkLtJNDQ7IzTh6"),
+            "Critical And Exegetical Commentary on the NT (Meyer) [20 vol.]": (
+            (config.marvelData, "commentaries", "cCECNT.commentary"), "1MpBx7z6xyJYISpW_7Dq-Uwv0rP8_Mi-r"),
+            "Cambridge Greek Testament for Schools and Colleges (Cambridge) [21 vol.]": (
+            (config.marvelData, "commentaries", "cCGrk.commentary"), "1Jf51O0R911Il0V_SlacLQDNPaRjumsbD"),
+            "Church Pulpit Commentary (Nisbet) [12 vol.]": (
+            (config.marvelData, "commentaries", "cCHP.commentary"), "1dygf2mz6KN_ryDziNJEu47-OhH8jK_ff"),
+            "Commentary on the Bible (Clarke) [6 vol.]": (
+            (config.marvelData, "commentaries", "cClarke.commentary"), "1ZVpLAnlSmBaT10e5O7pljfziLUpyU4Dq"),
+            "College Press Bible Study Textbook Series (College) [59 vol.]": (
+            (config.marvelData, "commentaries", "cCPBST.commentary"), "14zueTf0ioI-AKRo_8GK8PDRKael_kB1U"),
+            "Expositor's Bible Commentary (Nicoll) [49 vol.]": (
+            (config.marvelData, "commentaries", "cEBC.commentary"), "1UA3tdZtIKQEx-xmXtM_SO1k8S8DKYm6r"),
+            "Commentary for English Readers (Ellicott) [8 vol.]": (
+            (config.marvelData, "commentaries", "cECER.commentary"), "1sCJc5xuxqDDlmgSn2SFWTRbXnHSKXeh_"),
+            "Expositor's Greek New Testament (Nicoll) [5 vol.]": (
+            (config.marvelData, "commentaries", "cEGNT.commentary"), "1ZvbWnuy2wwllt-s56FUfB2bS2_rZoiPx"),
+            "Greek Testament Commentary (Alford) [4 vol.]": (
+            (config.marvelData, "commentaries", "cGCT.commentary"), "1vK53UO2rggdcfcDjH6mWXAdYti4UbzUt"),
+            "Exposition of the Entire Bible (Gill) [9 vol.]": (
+            (config.marvelData, "commentaries", "cGill.commentary"), "1O5jnHLsmoobkCypy9zJC-Sw_Ob-3pQ2t"),
+            "Exposition of the Old and New Testaments (Henry) [6 vol.]": (
+            (config.marvelData, "commentaries", "cHenry.commentary"), "1m-8cM8uZPN-fLVcC-a9mhL3VXoYJ5Ku9"),
+            "Horæ Homileticæ (Simeon) [21 vol.]": (
+            (config.marvelData, "commentaries", "cHH.commentary"), "1RwKN1igd1RbN7phiJDiLPhqLXdgOR0Ms"),
+            "International Critical Commentary, NT (1896-1929) [16 vol.]": (
+            (config.marvelData, "commentaries", "cICCNT.commentary"), "1QxrzeeZYc0-GNwqwdDe91H4j1hGSOG6t"),
+            "Jamieson, Fausset, and Brown Commentary (JFB) [6 vol.]": (
+            (config.marvelData, "commentaries", "cJFB.commentary"), "1NT02QxoLeY3Cj0uA_5142P5s64RkRlpO"),
+            "Commentary on the Old Testament (Keil & Delitzsch) [10 vol.]": (
+            (config.marvelData, "commentaries", "cKD.commentary"), "1rFFDrdDMjImEwXkHkbh7-vX3g4kKUuGV"),
+            "Commentary on the Holy Scriptures: Critical, Doctrinal, and Homiletical (Lange) [25 vol.]": (
+            (config.marvelData, "commentaries", "cLange.commentary"), "1_PrTT71aQN5LJhbwabx-kjrA0vg-nvYY"),
+            "Expositions of Holy Scripture (MacLaren) [32 vol.]": (
+            (config.marvelData, "commentaries", "cMacL.commentary"), "1p32F9MmQ2wigtUMdCU-biSrRZWrFLWJR"),
+            "Preacher's Complete Homiletical Commentary (Exell) [37 vol.]": (
+            (config.marvelData, "commentaries", "cPHC.commentary"), "1xTkY_YFyasN7Ks9me3uED1HpQnuYI8BW"),
+            "Pulpit Commentary (Spence) [23 vol.]": (
+            (config.marvelData, "commentaries", "cPulpit.commentary"), "1briSh0oDhUX7QnW1g9oM3c4VWiThkWBG"),
+            "Word Pictures in the New Testament (Robertson) [6 vol.]": (
+            (config.marvelData, "commentaries", "cRob.commentary"), "17VfPe4wsnEzSbxL5Madcyi_ubu3iYVkx"),
+            "Spurgeon's Expositions on the Bible (Spurgeon) [3 vol.]": (
+            (config.marvelData, "commentaries", "cSpur.commentary"), "1OVsqgHVAc_9wJBCcz6PjsNK5v9GfeNwp"),
+            "Word Studies in the New Testament (Vincent) [4 vol.]": (
+            (config.marvelData, "commentaries", "cVincent.commentary"), "1ZZNnCo5cSfUzjdEaEvZ8TcbYa4OKUsox"),
+            "John Wesley's Notes on the Whole Bible (Wesley) [3 vol.]": (
+            (config.marvelData, "commentaries", "cWesley.commentary"), "1rerXER1ZDn4e1uuavgFDaPDYus1V-tS5"),
+            "Commentary on the Old and New Testaments (Whedon) [14 vol.]": (
+            (config.marvelData, "commentaries", "cWhedon.commentary"), "1FPJUJOKodFKG8wsNAvcLLc75QbM5WO-9"),
         }
-        items = [commentary for commentary in commentaries.keys() if not os.path.isfile(os.path.join(*commentaries[commentary][0]))]
+        items = [commentary for commentary in commentaries.keys() if
+                 not os.path.isfile(os.path.join(*commentaries[commentary][0]))]
         if items:
             commentaries["Install ALL Commentaries Listed Above"] = ""
             items.append("Install ALL Commentaries Listed Above")
         else:
             items = ["[All Installed]"]
         item, ok = QInputDialog.getItem(self, "UniqueBible",
-                config.thisTranslation["menu8_commentaries"], items, 0, False)
+                                        config.thisTranslation["menu8_commentaries"], items, 0, False)
         if ok and item and not item in ("[All Installed]", "Install ALL Commentaries Listed Above"):
             self.downloadHelper(commentaries[item])
         elif item == "Install ALL Commentaries Listed Above":
             self.installAllMarvelCommentaries(commentaries)
 
+    def installHymnLyrics(self):
+        hymnLyrics = {
+            "Hymn Lyrics - English":
+                ((config.marvelData, "books", "Hymn Lyrics - English.book"), "1jO2-akZYgR7xl0ROIVMrjitDTVkEq6LJ"),
+            "Hymn Lyrics - Chinese - 迦南诗选":
+                ((config.marvelData, "books", "Hymn Lyrics - Chinese.book"), "1NXyLJ-OdKmOdc1CErbsaIT-egz0q9n6l"),
+            "Hymn Lyrics - French - Les Chants Joyeux":
+                ((config.marvelData, "books", "Hymn Lyrics - French.book"), "1MCHGo7-7wyR2tkXjEim36TffyKnzeGd-"),
+            "Hymn Lyrics - Spanish - Himnos Letras":
+                ((config.marvelData, "books", "Hymn Lyrics - Spanish.book"), "11_H2BxoSdWdcmZ2nv3E3vh9uaXBeyfE8"),
+        }
+        items = [book for book in hymnLyrics.keys() if
+                 not os.path.isfile(os.path.join(*hymnLyrics[book][0]))]
+        if not items:
+            items = ["[All Installed]"]
+        item, ok = QInputDialog.getItem(self, "UniqueBible",
+                                        config.thisTranslation["hymn_lyrics"], items, 0, False)
+        if ok and item and not item in ("[All Installed]"):
+            self.downloadHelper(hymnLyrics[item])
+
     def installAllMarvelCommentaries(self, commentaries):
-        toBeInstalled = [commentary for commentary in commentaries.keys() if not commentary == "Install ALL Commentaries Listed Above" and not os.path.isfile(os.path.join(*commentaries[commentary][0]))]
-        self.displayMessage("{0}  {1}".format(config.thisTranslation["message_downloadAllFiles"], config.thisTranslation["message_willBeNoticed"]))
-        for commentary in toBeInstalled:
-            databaseInfo = commentaries[commentary]
-            downloader = Downloader(self, databaseInfo)
-            downloader.downloadFile(False)
-        self.displayMessage(config.thisTranslation["message_done"])
+        if config.isDownloading:
+            self.displayMessage(config.thisTranslation["previousDownloadIncomplete"])
+        else:
+            toBeInstalled = [commentary for commentary in commentaries.keys() if
+                             not commentary == "Install ALL Commentaries Listed Above" and not os.path.isfile(
+                                 os.path.join(*commentaries[commentary][0]))]
+            self.displayMessage("{0}  {1}".format(config.thisTranslation["message_downloadAllFiles"],
+                                                  config.thisTranslation["message_willBeNoticed"]))
+            for commentary in toBeInstalled:
+                databaseInfo = commentaries[commentary]
+                downloader = Downloader(self, databaseInfo)
+                downloader.downloadFile(False)
+            # self.displayMessage(config.thisTranslation["message_done"])
 
     def installMarvelDatasets(self):
         datasets = {
-            "Core Datasets": ((config.marvelData, "images.sqlite"), "1E7uoGqndCcqdeh8kl5kS0Z9pOTe8iWFp"),
+            "Core Datasets": ((config.marvelData, "images.sqlite"), "1-aFEfnSiZSIjEPUQ2VIM75I4YRGIcy5-"),
             "Search Engine": ((config.marvelData, "search.sqlite"), "1A4s8ewpxayrVXamiva2l1y1AinAcIKAh"),
             "Smart Indexes": ((config.marvelData, "indexes2.sqlite"), "1hY-QkBWQ8UpkeqM8lkB6q_FbaneU_Tg5"),
             "Chapter & Verse Notes": ((config.marvelData, "note.sqlite"), "1OcHrAXLS-OLDG5Q7br6mt2WYCedk8lnW"),
             "Bible Background Data": ((config.marvelData, "data", "exlb3.data"), "1gp2Unsab85Se-IB_tmvVZQ3JKGvXLyMP"),
             "Bible Topics Data": ((config.marvelData, "data", "exlb3.data"), "1gp2Unsab85Se-IB_tmvVZQ3JKGvXLyMP"),
-            "Cross-reference Data": ((config.marvelData, "cross-reference.sqlite"), "1fTf0L7l1k_o1Edt4KUDOzg5LGHtBS3w_"),
+            "Cross-reference Data": (
+            (config.marvelData, "cross-reference.sqlite"), "1fTf0L7l1k_o1Edt4KUDOzg5LGHtBS3w_"),
             "Dictionaries": ((config.marvelData, "data", "dictionary.data"), "1NfbkhaR-dtmT1_Aue34KypR3mfPtqCZn"),
             "Encyclopedia": ((config.marvelData, "data", "encyclopedia.data"), "1OuM6WxKfInDBULkzZDZFryUkU1BFtym8"),
             "Lexicons": ((config.marvelData, "lexicons", "MCGED.lexicon"), "157Le0xw2ovuoF2v9Bf6qeck0o15RGfMM"),
-            "Atlas, Timelines & Books": ((config.marvelData, "books", "Maps_ABS.book"), "13hf1NvhAjNXmRQn-Cpq4hY0E2XbEfmEd"),
+            "Atlas, Timelines & Books": (
+            (config.marvelData, "books", "Maps_ABS.book"), "13hf1NvhAjNXmRQn-Cpq4hY0E2XbEfmEd"),
             "Word Data": ((config.marvelData, "data", "wordNT.data"), "11pmVhecYEtklcB4fLjNP52eL9pkytFdS"),
             "Words Data": ((config.marvelData, "data", "wordsNT.data"), "11bANQQhH6acVujDXiPI4JuaenTFYTkZA"),
             "Clause Data": ((config.marvelData, "data", "clauseNT.data"), "11pmVhecYEtklcB4fLjNP52eL9pkytFdS"),
-            "Translation Data": ((config.marvelData, "data", "translationNT.data"), "11bANQQhH6acVujDXiPI4JuaenTFYTkZA"),
+            "Translation Data": (
+            (config.marvelData, "data", "translationNT.data"), "11bANQQhH6acVujDXiPI4JuaenTFYTkZA"),
             "Discourse Data": ((config.marvelData, "data", "discourseNT.data"), "11bANQQhH6acVujDXiPI4JuaenTFYTkZA"),
             "TDW Combo Data": ((config.marvelData, "data", "wordsNT.data"), "11bANQQhH6acVujDXiPI4JuaenTFYTkZA"),
         }
@@ -1588,9 +641,42 @@ class MainWindow(QMainWindow):
         if not items:
             items = ["[All Installed]"]
         item, ok = QInputDialog.getItem(self, "UniqueBible",
-                config.thisTranslation["menu8_datasets"], items, 0, False)
+                                        config.thisTranslation["menu8_datasets"], items, 0, False)
         if ok and item and not item == "[All Installed]":
             self.downloadHelper(datasets[item])
+
+    # Select database to modify
+    def selectDatabaseToModify(self):
+        items = BiblesSqlite().getFormattedBibleList()
+        item, ok = QInputDialog.getItem(self, "UniqueBible",
+                                        config.thisTranslation["modify_database"], items, 0, False)
+        if ok and item:
+            dialog = ModifyDatabaseDialog("bible", item)
+            dialog.exec_()
+
+    # Select language file to edit
+    def selectLanguageFileToEdit(self):
+        items = LanguageUtil.getCodesSupportedLanguages()
+        index = items.index(config.workingTranslation)
+        item, ok = QInputDialog.getItem(self, "UniqueBible",
+                                        config.thisTranslation["edit_language_file"], items, index, False)
+        if ok and item:
+            config.workingTranslation = item
+            dialog = EditGuiLanguageFileDialog(self, item)
+            dialog.exec_()
+
+    def selectReferenceTranslation(self):
+        items = LanguageUtil.getCodesSupportedLanguages()
+        index = items.index(config.referenceTranslation)
+        item, ok = QInputDialog.getItem(self, "UniqueBible",
+                                        "Select Tooltip Translation", items, index, False)
+        if ok and item:
+            config.referenceTranslation = item
+
+    def editWorkingTranslation(self):
+        dialog = EditGuiLanguageFileDialog(self, config.workingTranslation)
+        dialog.exec_()
+        
 
     # convert bible references to string
     def bcvToVerseReference(self, b, c, v):
@@ -1601,6 +687,11 @@ class MainWindow(QMainWindow):
 
     # Open text on left and right view
     def openTextOnMainView(self, text):
+        if config.bibleWindowContentTransformers:
+            for transformer in config.bibleWindowContentTransformers:
+                text = transformer(text)
+        if hasattr(config, "cli"):
+            config.bibleWindowContent = text
         if self.newTabException:
             self.newTabException = False
         elif self.syncingBibles:
@@ -1629,7 +720,50 @@ class MainWindow(QMainWindow):
             reference = "{0}-{1}".format(self.textCommandParser.lastKeyword, reference2)
         self.mainView.setTabText(self.mainView.currentIndex(), reference)
         self.mainView.setTabToolTip(self.mainView.currentIndex(), reference)
-            
+
+    def setAppWindowStyle(self, style):
+        config.windowStyle = "" if style == "default" else style
+        self.displayMessage(config.thisTranslation["message_themeTakeEffectAfterRestart"])
+
+    def setQtMaterialTheme(self, theme):
+        config.qtMaterialTheme = theme
+        self.displayMessage(config.thisTranslation["message_themeTakeEffectAfterRestart"])
+
+    def enableQtMaterial(self, qtMaterial=True):
+        if qtMaterial:
+            try:
+                from qt_material import apply_stylesheet
+                self.selectQtMaterialTheme()
+            except:
+                config.qtMaterial = False
+                self.displayMessage(config.thisTranslation["installQtMaterial"])
+        else:
+            self.selectBuiltinTheme()
+
+    def selectQtMaterialTheme(self):
+        items = ("light_amber.xml", "light_blue.xml", "light_cyan.xml", "light_cyan_500.xml", "light_lightgreen.xml",
+                 "light_pink.xml", "light_purple.xml", "light_red.xml", "light_teal.xml", "light_yellow.xml",
+                 "dark_amber.xml", "dark_blue.xml", "dark_cyan.xml", "dark_lightgreen.xml", "dark_pink.xml",
+                 "dark_purple.xml", "dark_red.xml", "dark_teal.xml", "dark_yellow.xml")
+        item, ok = QInputDialog.getItem(self, "UniqueBible",
+                                        config.thisTranslation["menu1_selectThemeQtMaterial"], items, items.index(
+                config.qtMaterialTheme) if config.qtMaterialTheme and config.qtMaterialTheme in items else 0, False)
+        if ok and item:
+            config.qtMaterial = True
+            config.qtMaterialTheme = item
+            self.displayMessage(config.thisTranslation["message_themeTakeEffectAfterRestart"])
+
+    def selectBuiltinTheme(self):
+        items = ("default", "dark")
+        item, ok = QInputDialog.getItem(self, "UniqueBible",
+                                        config.thisTranslation["menu1_selectThemeBuiltin"], items,
+                                        items.index(config.theme) if config.theme and config.theme in items else 0,
+                                        False)
+        if ok and item:
+            config.qtMaterial = False
+            config.theme = item
+            self.displayMessage(config.thisTranslation["message_themeTakeEffectAfterRestart"])
+
     def setDefaultTheme(self):
         config.theme = "default"
         self.displayMessage(config.thisTranslation["message_themeTakeEffectAfterRestart"])
@@ -1637,6 +771,47 @@ class MainWindow(QMainWindow):
     def setDarkTheme(self):
         config.theme = "dark"
         self.displayMessage(config.thisTranslation["message_themeTakeEffectAfterRestart"])
+
+    def setMenuLayout(self, layout):
+        config.menuLayout = layout
+        self.setupMenuLayout(layout)
+
+    def setClassicMenuLayout(self):
+        self.setMenuLayout("classic")
+
+    def setFocusMenuLayout(self):
+        self.setMenuLayout("focus")
+
+    def setAlephMenuLayout(self):
+        self.setMenuLayout("aleph")
+
+    def setShortcuts(self, shortcut):
+        config.menuShortcuts = shortcut
+        ShortcutUtil.reset()
+        ShortcutUtil.setup(shortcut)
+        ShortcutUtil.loadShortcutFile()
+        self.setupMenuLayout(config.menuLayout)
+
+    def showUpdateAppWindow(self):
+        updateAppWindow = AppUpdateDialog(self)
+        updateAppWindow.exec()
+
+    def displayShortcuts(self):
+        shortcutWindow = DisplayShortcutsWindow(config.menuShortcuts, ShortcutUtil.getAllShortcuts())
+        if shortcutWindow.exec():
+            ShortcutUtil.setup(config.menuShortcuts)
+            ShortcutUtil.loadShortcutFile(config.menuShortcuts)
+            ShortcutUtil.loadShortcutFile()
+            self.setupMenuLayout(config.menuLayout)
+
+    def showInfo(self):
+        infoDialog = InfoDialog()
+        infoDialog.exec()
+
+    def showCommandDocumentation(self):
+        content = "UBA commands:\n{0}".format("\n".join([re.sub("            #", "#", value[-1]) for value in config.mainWindow.textCommandParser.interpreters.values()]))
+        infoDialog = InfoDialog(content, config.thisTranslation["ubaCommands"])
+        infoDialog.exec()
 
     def exportAllImages(self, htmlText):
         self.exportImageNumber = 0
@@ -1650,10 +825,10 @@ class MainWindow(QMainWindow):
             os.makedirs(exportFolder)
         quotationMark, ext, asciiString = match.groups()
         # Note the difference between "groups" and "group"
-        #wholeString = match.group(0)
-        #quotationMark = match.group(1)
-        #ext = match.group(2)
-        #asciiString = match.group(3)
+        # wholeString = match.group(0)
+        # quotationMark = match.group(1)
+        # ext = match.group(2)
+        # asciiString = match.group(3)
         self.exportImageNumber += 1
         binaryString = asciiString.encode("ascii")
         binaryData = base64.b64decode(binaryString)
@@ -1664,9 +839,16 @@ class MainWindow(QMainWindow):
         return "src={0}images/export/{1}{0}".format(quotationMark, imageFilename)
 
     def addOpenImageAction(self, text):
-        return re.sub(r"(<img[^<>]*?src=)(['{0}])(images/[^<>]*?)\2([^<>]*?>)".format('"'), r"<ref onclick={0}openHtmlFile('\3'){0}>\1\2\3\2\4</ref>".format('"'), text)
+        return re.sub(r"(<img[^<>]*?src=)(['{0}])(images/[^<>]*?)\2([^<>]*?>)".format('"'),
+                      r"<ref onclick={0}openHtmlFile('\3'){0}>\1\2\3\2\4</ref>".format('"'), text)
 
-    def openTextOnStudyView(self, text):
+    def openTextOnStudyView(self, text, tab_title=''):
+        text = re.sub("\*\*\*\[([^'{0}]*?)@([^'{0}]*?)\]".format('"\*\[\]@'), r"<ref onclick={0}document.title='\1'{0}>\2</ref>".format('"'), text)
+        if config.studyWindowContentTransformers:
+            for transformer in config.studyWindowContentTransformers:
+                text = transformer(text)
+        if hasattr(config, "cli"):
+            config.studyWindowContent = text
         if self.newTabException:
             self.newTabException = False
         elif self.syncingBibles:
@@ -1676,8 +858,8 @@ class MainWindow(QMainWindow):
             if nextIndex >= config.numberOfTab:
                 nextIndex = 0
             self.studyView.setCurrentIndex(nextIndex)
-            #Alternatively,
-            #self.studyView.setCurrentWidget(self.studyView.widget(nextIndex))
+            # Alternatively,
+            # self.studyView.setCurrentWidget(self.studyView.widget(nextIndex))
         # export embedded images if enabled
         if config.exportEmbeddedImages:
             text = self.exportAllImages(text)
@@ -1685,7 +867,7 @@ class MainWindow(QMainWindow):
         if config.clickToOpenImage:
             text = self.addOpenImageAction(text)
         # check size of text content
-        if sys.getsizeof(text) < 2097152:
+        if not config.forceGenerateHtml and sys.getsizeof(text) < 2097152:
             self.studyView.setHtml(text, baseUrl)
         else:
             # save html in a separate file if text is larger than 2MB
@@ -1701,14 +883,17 @@ class MainWindow(QMainWindow):
             self.parallel()
         if self.textCommandParser.lastKeyword == "main":
             self.textCommandParser.lastKeyword = "study"
-        self.studyView.setTabText(self.studyView.currentIndex(), self.textCommandParser.lastKeyword)
-        self.studyView.setTabToolTip(self.studyView.currentIndex(), self.textCommandParser.lastKeyword)
+        if tab_title == '':
+            tab_title = self.textCommandParser.lastKeyword
+        self.studyView.setTabText(self.studyView.currentIndex(), tab_title)
+        self.studyView.setTabToolTip(self.studyView.currentIndex(), tab_title)
 
     # warning for next action without saving modified notes
     def warningNotSaved(self):
         msgBox = QMessageBox(QMessageBox.Warning,
-                "QMessageBox.warning()", "Notes are currently opened and modified.  Do you really want to continue, without saving the changes?",
-                QMessageBox.NoButton, self)
+                             "QMessageBox.warning()",
+                             "Notes are currently opened and modified.  Do you really want to continue, without saving the changes?",
+                             QMessageBox.NoButton, self)
         msgBox.addButton("Cancel", QMessageBox.AcceptRole)
         msgBox.addButton("&Continue", QMessageBox.RejectRole)
         if msgBox.exec_() == QMessageBox.AcceptRole:
@@ -1722,23 +907,48 @@ class MainWindow(QMainWindow):
     def createNewNoteFile(self):
         if self.noteSaved:
             self.noteEditor = NoteEditor(self, "file")
+            if config.contextItem:
+                self.noteEditor.editor.insertPlainText(config.contextItem)
+                config.contextItem = ""
             self.noteEditor.show()
         elif self.warningNotSaved():
             self.noteEditor = NoteEditor(self, "file")
+            if config.contextItem:
+                self.noteEditor.editor.insertPlainText(config.contextItem)
+                config.contextItem = ""
             self.noteEditor.show()
         else:
-            self.noteEditor.raise_()
+            self.bringToForeground(self.noteEditor)
+
+    def bringToForeground(self, window):
+        if config.controlPanel and not (window.isVisible() and window.isActiveWindow()):
+            window.raise_()
+            # Method activateWindow() does not work with qt.qpa.wayland
+            # platform.system() == "Linux" and not os.getenv('QT_QPA_PLATFORM') is None and os.getenv('QT_QPA_PLATFORM') == "wayland"
+            # The error message is received when QT_QPA_PLATFORM=wayland:
+            # qt.qpa.wayland: Wayland does not support QWindow::requestActivate()
+            # Therefore, we use hide and show methods instead with wayland.
+            if window.isVisible() and not window.isActiveWindow():
+                window.hide()
+            window.show()
+            window.activateWindow()
 
     def openNoteEditor(self, noteType, b=None, c=None, v=None):
         if not (config.noteOpened and config.lastOpenedNote == (noteType, b, c, v)):
             self.noteEditor = NoteEditor(self, noteType, b=b, c=c, v=v)
             self.noteEditor.show()
 
+    def openMainBookNote(self):
+        self.openBookNote(config.mainB)
+
     def openMainChapterNote(self):
         self.openChapterNote(config.mainB, config.mainC)
 
     def openMainVerseNote(self):
         self.openVerseNote(config.mainB, config.mainC, config.mainV)
+
+    def openStudyBookNote(self):
+        self.openBookNote(config.studyB)
 
     def openStudyChapterNote(self):
         self.openChapterNote(config.studyB, config.studyC)
@@ -1748,10 +958,26 @@ class MainWindow(QMainWindow):
 
     def fixNoteFontDisplay(self, content):
         if config.overwriteNoteFont:
-            content = re.sub("font-family:[^<>]*?([;'{0}])".format('"'), r"font-family:{0}\1".format(config.font), content)
+            content = re.sub("font-family:[^<>]*?([;'{0}])".format('"'), r"font-family:{0}\1".format(config.font),
+                             content)
         if config.overwriteNoteFontSize:
             content = re.sub("font-size:[^<>]*?;", "", content)
         return content
+
+    def openBookNote(self, b):
+        self.textCommandParser.lastKeyword = "note"
+        reference = BibleVerseParser(config.parserStandarisation).bcvToVerseReference(b, 1, 1)
+        config.studyB, config.studyC, config.studyV = b, 1, 1
+        self.updateStudyRefButton()
+        config.commentaryB, config.commentaryC, config.commentaryV = b, 1, 1
+        self.updateCommentaryRefButton()
+        note = NoteService.getBookNote(b)
+        note = self.fixNoteFontDisplay(note)
+        note = "<p style=\"font-family:'{3}'; font-size:{4}pt;\"><b>Note on {0}</b> &ensp;<button class='feature' onclick='document.title=\"_editbooknote:::{2}\"'>edit</button></p>{1}".format(
+            reference[:-4], note, b, config.font, config.fontSize)
+        note = self.htmlWrapper(note, True, "study", False)
+        self.openTextOnStudyView(note, tab_title=reference)
+        self.addHistoryRecord("study", "OPENBOOKNOTE:::{0}".format(reference[:-4]))
 
     def openChapterNote(self, b, c):
         self.textCommandParser.lastKeyword = "note"
@@ -1760,10 +986,13 @@ class MainWindow(QMainWindow):
         self.updateStudyRefButton()
         config.commentaryB, config.commentaryC, config.commentaryV = b, c, 1
         self.updateCommentaryRefButton()
-        note = self.fixNoteFontDisplay(NoteSqlite().displayChapterNote((b, c)))
-        note = "<p style=\"font-family:'{4}'; font-size:{5}pt;\"><b>Note on {0}</b> &ensp;<button class='feature' onclick='document.title=\"_editchapternote:::{2}.{3}\"'>edit</button></p>{1}".format(reference[:-2], note, b, c, config.font, config.fontSize)
+        note = NoteService.getChapterNote(b, c)
+        note = self.fixNoteFontDisplay(note)
+        note = "<p style=\"font-family:'{4}'; font-size:{5}pt;\"><b>Note on {0}</b> &ensp;<button class='feature' onclick='document.title=\"_editchapternote:::{2}.{3}\"'>edit</button></p>{1}".format(
+            reference[:-2], note, b, c, config.font, config.fontSize)
         note = self.htmlWrapper(note, True, "study", False)
-        self.openTextOnStudyView(note)
+        self.openTextOnStudyView(note, tab_title=reference)
+        self.addHistoryRecord("study", "OPENCHAPTERNOTE:::{0}".format(reference[:-2]))
 
     def openVerseNote(self, b, c, v):
         self.textCommandParser.lastKeyword = "note"
@@ -1772,10 +1001,20 @@ class MainWindow(QMainWindow):
         self.updateStudyRefButton()
         config.commentaryB, config.commentaryC, config.commentaryV = b, c, v
         self.updateCommentaryRefButton()
-        note = self.fixNoteFontDisplay(NoteSqlite().displayVerseNote((b, c, v)))
-        note = "<p style=\"font-family:'{5}'; font-size:{6}pt;\"><b>Note on {0}</b> &ensp;<button class='feature' onclick='document.title=\"_editversenote:::{2}.{3}.{4}\"'>edit</button></p>{1}".format(reference, note, b, c, v, config.font, config.fontSize)
+        note = NoteService.getVerseNote(b, c, v)
+        note = self.fixNoteFontDisplay(note)
+        note = "<p style=\"font-family:'{5}'; font-size:{6}pt;\"><b>Note on {0}</b> &ensp;<button class='feature' onclick='document.title=\"_editversenote:::{2}.{3}.{4}\"'>edit</button></p>{1}".format(
+            reference, note, b, c, v, config.font, config.fontSize)
         note = self.htmlWrapper(note, True, "study", False)
-        self.openTextOnStudyView(note)
+        self.openTextOnStudyView(note, tab_title=reference)
+        self.addHistoryRecord("study", "OPENVERSENOTE:::{0}".format(reference))
+
+    def getHighlightCss(self):
+        css = ""
+        for i in range(len(config.highlightCollections)):
+            code = "hl{0}".format(i + 1)
+            css += ".{2} {0} background: {3}; {1} ".format("{", "}", code, config.highlightDarkThemeColours[i] if config.theme == "dark" else config.highlightLightThemeColours[i])
+        return css
 
     # Actions - open text from external sources
     def htmlWrapper(self, text, parsing=False, view="study", linebreak=True):
@@ -1786,7 +1025,8 @@ class MainWindow(QMainWindow):
         searchReplace2 = (
             ("<br>(<table>|<ol>|<ul>)", r"\1"),
             ("(</table>|</ol>|</ul>)<br>", r"\1"),
-            ("<a [^\n<>]*?href=['{0}]([^\n<>]*?)['{0}][^\n<>]*?>".format('"'), r"<a href='javascript:void(0)' onclick='website({0}\1{0})'>".format('"')),
+            ("<a [^\n<>]*?href=['{0}]([^\n<>]*?)['{0}][^\n<>]*?>".format('"'),
+             r"<a href='javascript:void(0)' onclick='website({0}\1{0})'>".format('"')),
             ("onclick='website\({0}([^\n<>]*?).uba{0}\)'".format('"'), r"onclick='uba({0}\1.uba{0})'".format('"'))
         )
         if linebreak:
@@ -1797,24 +1037,35 @@ class MainWindow(QMainWindow):
         if parsing:
             text = BibleVerseParser(config.parserStandarisation).parseText(text)
         if view == "main":
-            activeBCVsettings = "<script>var activeText = '{0}'; var activeB = {1}; var activeC = {2}; var activeV = {3};</script>".format(config.mainText, config.mainB, config.mainC, config.mainV)
+            activeBCVsettings = "<script>var activeText = '{0}'; var activeB = {1}; var activeC = {2}; var activeV = {3};</script>".format(
+                config.mainText, config.mainB, config.mainC, config.mainV)
         elif view == "study":
-            activeBCVsettings = "<script>var activeText = '{0}'; var activeB = {1}; var activeC = {2}; var activeV = {3};</script>".format(config.studyText, config.studyB, config.studyC, config.studyV)
-        text = "<!DOCTYPE html><html><head><title>UniqueBible.app</title><style>body {2} font-size: {4}px; font-family:'{5}'; {3} zh {2} font-family:'{6}'; {3}</style><link rel='stylesheet' type='text/css' href='css/{7}.css'><script src='js/{7}.js'></script><script src='w3.js'></script>{0}<script>var versionList = []; var compareList = []; var parallelList = []; var diffList = []; var searchList = [];</script></head><body><span id='v0.0.0'></span>{1}</body></html>".format(activeBCVsettings, text, "{", "}", config.fontSize, config.font, config.fontChinese, config.theme)
-        
+            activeBCVsettings = "<script>var activeText = '{0}'; var activeB = {1}; var activeC = {2}; var activeV = {3};</script>".format(
+                config.studyText, config.studyB, config.studyC, config.studyV)
+        text = "<!DOCTYPE html><html><head><title>UniqueBible.app</title><style>body {2} font-size: {4}px; font-family:'{5}'; {3} zh {2} font-family:'{6}'; {3} {8}</style><link id='theme_stylesheet' rel='stylesheet' type='text/css' href='css/{7}.css'><link id='theme_stylesheet' rel='stylesheet' type='text/css' href='css/custom.css'><script src='js/common.js'></script><script src='js/{7}.js'></script><script src='w3.js'></script><script src='js/custom.js'></script>{0}<script>var versionList = []; var compareList = []; var parallelList = []; var diffList = []; var searchList = [];</script></head><body><span id='v0.0.0'></span>{1}</body></html>".format(
+            activeBCVsettings, text, "{", "}", config.fontSize, config.font, config.fontChinese, config.theme, self.getHighlightCss())
+
         return text
 
     def pasteFromClipboard(self):
-        clipboardText = qApp.clipboard().text()
-        # note: can use qApp.clipboard().setText to set text in clipboard
+        clipboardText = QApplication.clipboard().text()
+        #clipboardText = QGuiApplication.instance().clipboard().text()
+        # note: can use QGuiApplication.instance().clipboard().setText to set text in clipboard
         self.openTextOnStudyView(self.htmlWrapper(clipboardText, True))
+
+    def parseContentOnClipboard(self):
+        clipboardText = QApplication.clipboard().text()
+        self.textCommandLineEdit.setText(clipboardText)
+        self.runTextCommand(clipboardText)
+        self.manageControlPanel()
 
     def openTextFileDialog(self):
         options = QFileDialog.Options()
         fileName, filtr = QFileDialog.getOpenFileName(self,
-                config.thisTranslation["menu7_open"],
-                self.openFileNameLabel.text(),
-                "UniqueBible.app Note Files (*.uba);;HTML Files (*.html);;HTM Files (*.htm);;Word Documents (*.docx);;Plain Text Files (*.txt);;PDF Files (*.pdf);;All Files (*)", "", options)
+                                                      config.thisTranslation["menu7_open"],
+                                                      self.openFileNameLabel.text(),
+                                                      "UniqueBible.app Note Files (*.uba);;HTML Files (*.html);;HTM Files (*.htm);;Word Documents (*.docx);;Plain Text Files (*.txt);;PDF Files (*.pdf);;All Files (*)",
+                                                      "", options)
         if fileName:
             self.openTextFile(fileName)
 
@@ -1849,6 +1100,60 @@ class MainWindow(QMainWindow):
         else:
             return "[open file]"
 
+    def runBookFeatureIntroduction(self):
+        engFullBookName = BibleBooks().eng[str(config.mainB)][1]
+        command = "SEARCHBOOKCHAPTER:::Tidwell_The_Bible_Book_by_Book:::{0}".format(engFullBookName)
+        self.textCommandLineEdit.setText(command)
+        self.runTextCommand(command)
+
+    def runBookFeatureTimelines(self):
+        engFullBookName = BibleBooks().eng[str(config.mainB)][1]
+        command = "SEARCHBOOKCHAPTER:::Timelines:::{0}".format(engFullBookName)
+        self.textCommandLineEdit.setText(command)
+        self.runTextCommand(command)
+
+    def runBookFeatureDictionary(self):
+        engFullBookName = BibleBooks().eng[str(config.mainB)][1]
+        matches = re.match("^[0-9]+? (.*?)$", engFullBookName)
+        if matches:
+            engFullBookName = matches.group(1)
+        command = "SEARCHTOOL:::{0}:::{1}".format(config.dictionary, engFullBookName)
+        self.textCommandLineEdit.setText(command)
+        self.runTextCommand(command)
+
+    def runBookFeatureEncyclopedia(self):
+        engFullBookName = BibleBooks().eng[str(config.mainB)][1]
+        matches = re.match("^[0-9]+? (.*?)$", engFullBookName)
+        if matches:
+            engFullBookName = matches.group(1)
+        command = "SEARCHTOOL:::{0}:::{1}".format(config.encyclopedia, engFullBookName)
+        self.textCommandLineEdit.setText(command)
+        self.runTextCommand(command)
+
+    def runChapterFeatureOverview(self):
+        bookAbb = BibleBooks().eng[str(config.mainB)][0]
+        command = "OVERVIEW:::{0} {1}".format(bookAbb, config.mainC)
+        self.textCommandLineEdit.setText(command)
+        self.runTextCommand(command)
+
+    def runChapterFeatureChapterIndex(self):
+        bookAbb = BibleBooks().eng[str(config.mainB)][0]
+        command = "CHAPTERINDEX:::{0} {1}".format(bookAbb, config.mainC)
+        self.textCommandLineEdit.setText(command)
+        self.runTextCommand(command)
+
+    def runChapterFeatureSummary(self):
+        bookAbb = BibleBooks().eng[str(config.mainB)][0]
+        command = "SUMMARY:::{0} {1}".format(bookAbb, config.mainC)
+        self.textCommandLineEdit.setText(command)
+        self.runTextCommand(command)
+
+    def runChapterFeatureCommentary(self):
+        bookAbb = BibleBooks().eng[str(config.mainB)][0]
+        command = "COMMENTARY:::{0} {1}".format(bookAbb, config.mainC)
+        self.textCommandLineEdit.setText(command)
+        self.runTextCommand(command)
+
     def externalFileButtonClicked(self):
         externalFileHistory = config.history["external"]
         if externalFileHistory:
@@ -1875,7 +1180,7 @@ class MainWindow(QMainWindow):
                 self.noteEditor = NoteEditor(self, "file", filename)
                 self.noteEditor.show()
             else:
-                self.noteEditor.raise_()
+                self.bringToForeground(self.noteEditor)
         else:
             self.openExternalFile(filename)
 
@@ -1898,26 +1203,36 @@ class MainWindow(QMainWindow):
         if fileName:
             text = TextFileReader().readTxtFile(fileName)
             text = self.htmlWrapper(text, True)
-            self.openTextOnStudyView(text)
+            self.openTextOnStudyView(text, tab_title=os.path.basename(fileName))
 
     def openUbaFile(self, fileName):
         if fileName:
             text = TextFileReader().readTxtFile(fileName)
             text = self.fixNoteFontDisplay(text)
             text = self.htmlWrapper(text, True, "study", False)
-            self.openTextOnStudyView(text)
+            self.openTextOnStudyView(text, tab_title=os.path.basename(fileName))
 
     def openPdfFile(self, fileName):
-        if fileName:
-            text = TextFileReader().readPdfFile(fileName)
-            text = self.htmlWrapper(text, True)
-            self.openTextOnStudyView(text)
+        if config.isPyPDF2Installed:
+            if fileName:
+                text = TextFileReader().readPdfFile(fileName)
+                text = self.htmlWrapper(text, True)
+                self.openTextOnStudyView(text, tab_title=os.path.basename(fileName))
+            else:
+                self.displayMessage(config.thisTranslation["message_noSupportedFile"])
+        else:
+            self.displayMessage(config.thisTranslation["message_noSupport"])
 
     def openDocxFile(self, fileName):
-        if fileName:
-            text = TextFileReader().readDocxFile(fileName)
-            text = self.htmlWrapper(text, True)
-            self.openTextOnStudyView(text)
+        if config.isPythonDocxInstalled:
+            if fileName:
+                text = TextFileReader().readDocxFile(fileName)
+                text = self.htmlWrapper(text, True)
+                self.openTextOnStudyView(text, tab_title=os.path.basename(fileName))
+            else:
+                self.displayMessage(config.thisTranslation["message_noSupportedFile"])
+        else:
+            self.displayMessage(config.thisTranslation["message_noSupport"])
 
     # Actions - export to pdf
     def printMainPage(self):
@@ -1932,10 +1247,11 @@ class MainWindow(QMainWindow):
     def importBBPlusLexiconInAFolder(self):
         options = QFileDialog.DontResolveSymlinks | QFileDialog.ShowDirsOnly
         directory = QFileDialog.getExistingDirectory(self,
-                config.thisTranslation["menu8_plusLexicons"],
-                self.directoryLabel.text(), options)
+                                                     config.thisTranslation["menu8_plusLexicons"],
+                                                     self.directoryLabel.text(), options)
         if directory:
             if Converter().importBBPlusLexiconInAFolder(directory):
+                self.reloadControlPanel(False)
                 self.displayMessage(config.thisTranslation["message_done"])
             else:
                 self.displayMessage(config.thisTranslation["message_noSupportedFile"])
@@ -1943,10 +1259,11 @@ class MainWindow(QMainWindow):
     def importBBPlusDictionaryInAFolder(self):
         options = QFileDialog.DontResolveSymlinks | QFileDialog.ShowDirsOnly
         directory = QFileDialog.getExistingDirectory(self,
-                config.thisTranslation["menu8_plusDictionaries"],
-                self.directoryLabel.text(), options)
+                                                     config.thisTranslation["menu8_plusDictionaries"],
+                                                     self.directoryLabel.text(), options)
         if directory:
             if Converter().importBBPlusDictionaryInAFolder(directory):
+                self.reloadControlPanel(False)
                 self.displayMessage(config.thisTranslation["message_done"])
             else:
                 self.displayMessage(config.thisTranslation["message_noSupportedFile"])
@@ -1959,11 +1276,18 @@ class MainWindow(QMainWindow):
     def importModules(self):
         options = QFileDialog.Options()
         fileName, filtr = QFileDialog.getOpenFileName(self,
-                config.thisTranslation["menu8_3rdParty"],
-                self.openFileNameLabel.text(),
-                "MySword Bibles (*.bbl.mybible);;MySword Commentaries (*.cmt.mybible);;MySword Books (*.bok.mybible);;MySword Dictionaries (*.dct.mybible);;e-Sword Bibles [Apple] (*.bbli);;e-Sword Commentaries [Apple] (*.cmti);;e-Sword Dictionaries [Apple] (*.dcti);;e-Sword Lexicons [Apple] (*.lexi);;e-Sword Books [Apple] (*.refi);;MyBible Bibles (*.SQLite3);;MyBible Commentaries (*.commentaries.SQLite3);;MyBible Dictionaries (*.dictionary.SQLite3)", "", options)
+                                                      config.thisTranslation["menu8_3rdParty"],
+                                                      self.openFileNameLabel.text(),
+                                                      (
+                                                          "MySword Bibles (*.bbl.mybible);;MySword Commentaries (*.cmt.mybible);;MySword Books (*.bok.mybible);;"
+                                                          "MySword Dictionaries (*.dct.mybible);;e-Sword Bibles [Apple] (*.bbli);;"
+                                                          "e-Sword Bibles [Apple] (*.bblx);;e-Sword Commentaries [Apple] (*.cmti);;"
+                                                          "e-Sword Dictionaries [Apple] (*.dcti);;e-Sword Lexicons [Apple] (*.lexi);;e-Sword Books [Apple] (*.refi);;"
+                                                          "MyBible Bibles (*.SQLite3);;MyBible Commentaries (*.commentaries.SQLite3);;MyBible Dictionaries (*.dictionary.SQLite3);;"
+                                                          "Zefania XML (*.xml)"), "", options)
         if fileName:
-            if fileName.endswith(".dct.mybible") or fileName.endswith(".dcti") or fileName.endswith(".lexi") or fileName.endswith(".dictionary.SQLite3"):
+            if fileName.endswith(".dct.mybible") or fileName.endswith(".dcti") or fileName.endswith(
+                    ".lexi") or fileName.endswith(".dictionary.SQLite3"):
                 self.importThirdPartyDictionary(fileName)
             elif fileName.endswith(".bbl.mybible"):
                 self.importMySwordBible(fileName)
@@ -1973,6 +1297,8 @@ class MainWindow(QMainWindow):
                 self.importMySwordBook(fileName)
             elif fileName.endswith(".bbli"):
                 self.importESwordBible(fileName)
+            elif fileName.endswith(".bblx"):
+                self.importESwordBible(fileName)
             elif fileName.endswith(".cmti"):
                 self.importESwordCommentary(fileName)
             elif fileName.endswith(".refi"):
@@ -1981,14 +1307,17 @@ class MainWindow(QMainWindow):
                 self.importMyBibleCommentary(fileName)
             elif fileName.endswith(".SQLite3"):
                 self.importMyBibleBible(fileName)
+            elif fileName.endswith(".xml"):
+                self.importXMLBible(fileName)
 
     def importModulesInFolder(self):
         options = QFileDialog.DontResolveSymlinks | QFileDialog.ShowDirsOnly
         directory = QFileDialog.getExistingDirectory(self,
-                config.thisTranslation["menu8_3rdPartyInFolder"],
-                self.directoryLabel.text(), options)
+                                                     config.thisTranslation["menu8_3rdPartyInFolder"],
+                                                     self.directoryLabel.text(), options)
         if directory:
             if Converter().importAllFilesInAFolder(directory):
+                self.reloadControlPanel(False)
                 self.displayMessage(config.thisTranslation["message_done"])
             else:
                 self.displayMessage(config.thisTranslation["message_noSupportedFile"])
@@ -1996,10 +1325,11 @@ class MainWindow(QMainWindow):
     def createBookModuleFromImages(self):
         options = QFileDialog.DontResolveSymlinks | QFileDialog.ShowDirsOnly
         directory = QFileDialog.getExistingDirectory(self,
-                config.thisTranslation["menu10_bookFromImages"],
-                self.directoryLabel.text(), options)
+                                                     config.thisTranslation["menu10_bookFromImages"],
+                                                     self.directoryLabel.text(), options)
         if directory:
             if Converter().createBookModuleFromImages(directory):
+                self.reloadControlPanel(False)
                 self.displayMessage(config.thisTranslation["message_done"])
             else:
                 self.displayMessage(config.thisTranslation["message_noSupportedFile"])
@@ -2007,10 +1337,11 @@ class MainWindow(QMainWindow):
     def createBookModuleFromHTML(self):
         options = QFileDialog.DontResolveSymlinks | QFileDialog.ShowDirsOnly
         directory = QFileDialog.getExistingDirectory(self,
-                config.thisTranslation["menu10_bookFromHtml"],
-                self.directoryLabel.text(), options)
+                                                     config.thisTranslation["menu10_bookFromHtml"],
+                                                     self.directoryLabel.text(), options)
         if directory:
             if Converter().createBookModuleFromHTML(directory):
+                self.reloadControlPanel(False)
                 self.displayMessage(config.thisTranslation["message_done"])
             else:
                 self.displayMessage(config.thisTranslation["message_noSupportedFile"])
@@ -2018,10 +1349,11 @@ class MainWindow(QMainWindow):
     def createBookModuleFromNotes(self):
         options = QFileDialog.DontResolveSymlinks | QFileDialog.ShowDirsOnly
         directory = QFileDialog.getExistingDirectory(self,
-                config.thisTranslation["menu10_bookFromNotes"],
-                self.directoryLabel.text(), options)
+                                                     config.thisTranslation["menu10_bookFromNotes"],
+                                                     self.directoryLabel.text(), options)
         if directory:
             if Converter().createBookModuleFromNotes(directory):
+                self.reloadControlPanel(False)
                 self.displayMessage(config.thisTranslation["message_done"])
             else:
                 self.displayMessage(config.thisTranslation["message_noSupportedFile"])
@@ -2067,63 +1399,71 @@ class MainWindow(QMainWindow):
         Converter().importMyBibleBible(fileName)
         self.completeImport()
 
+    def importXMLBible(self, fileName):
+        Converter().importXMLBible(fileName)
+        self.completeImport()
+
     def completeImport(self):
+        self.reloadControlPanel(False)
         self.displayMessage(config.thisTranslation["message_done"])
 
     # Actions - tag files with BibleVerseParser
     def onTaggingCompleted(self):
-        self.displayMessage("{0}  {1} 'tagged_'".format(config.thisTranslation["message_done"], config.thisTranslation["message_tagged"]))
+        self.displayMessage("{0}  {1} 'tagged_'".format(config.thisTranslation["message_done"],
+                                                        config.thisTranslation["message_tagged"]))
 
     def tagFile(self):
         options = QFileDialog.Options()
         fileName, filtr = QFileDialog.getOpenFileName(self,
-                config.thisTranslation["menu8_tagFile"],
-                self.openFileNameLabel.text(),
-                "All Files (*);;Text Files (*.txt);;CSV Files (*.csv);;TSV Files (*.tsv)", "", options)
+                                                      config.thisTranslation["menu8_tagFile"],
+                                                      self.openFileNameLabel.text(),
+                                                      "All Files (*);;Text Files (*.txt);;CSV Files (*.csv);;TSV Files (*.tsv)",
+                                                      "", options)
         if fileName:
-            BibleVerseParser(config.parserStandarisation).startParsing(fileName)
+            BibleVerseParser(config.parserStandarisation).extractAllReferencesstartParsing(fileName)
             self.onTaggingCompleted()
 
     def tagFiles(self):
         options = QFileDialog.Options()
         files, filtr = QFileDialog.getOpenFileNames(self,
-                config.thisTranslation["menu8_tagFiles"], self.openFilesPath,
-                "All Files (*);;Text Files (*.txt);;CSV Files (*.csv);;TSV Files (*.tsv)", "", options)
+                                                    config.thisTranslation["menu8_tagFiles"], self.openFilesPath,
+                                                    "All Files (*);;Text Files (*.txt);;CSV Files (*.csv);;TSV Files (*.tsv)",
+                                                    "", options)
         if files:
             parser = BibleVerseParser(config.parserStandarisation)
             for filename in files:
-                parser.startParsing(filename)
+                parser.extractAllReferencesstartParsing(filename)
             del parser
             self.onTaggingCompleted()
 
     def tagFolder(self):
         options = QFileDialog.DontResolveSymlinks | QFileDialog.ShowDirsOnly
         directory = QFileDialog.getExistingDirectory(self,
-                config.thisTranslation["menu8_tagFolder"],
-                self.directoryLabel.text(), options)
+                                                     config.thisTranslation["menu8_tagFolder"],
+                                                     self.directoryLabel.text(), options)
         if directory:
             path, filename = os.path.split(directory)
             outputFile = os.path.join(path, "output_{0}".format(filename))
-            BibleVerseParser(config.parserStandarisation).startParsing(directory)
+            BibleVerseParser(config.parserStandarisation).extractAllReferencesstartParsing(directory)
             self.onTaggingCompleted()
 
     # Action - open a dialog box to download a mp3 file from youtube
     def downloadMp3Dialog(self):
-        text, ok = QInputDialog.getText(self, "YouTube -> mp3", config.thisTranslation["youtube_address"], QLineEdit.Normal, "")
+        text, ok = QInputDialog.getText(self, "YouTube -> mp3", config.thisTranslation["youtube_address"],
+                                        QLineEdit.Normal, "")
         if ok and text and QUrl.fromUserInput(text).isValid():
             self.runTextCommand("mp3:::{0}".format(text))
 
     # Action - open a dialog box to download a youtube video in mp4 format
     def downloadMp4Dialog(self):
-        text, ok = QInputDialog.getText(self, "YouTube -> mp4", config.thisTranslation["youtube_address"], QLineEdit.Normal, "")
+        text, ok = QInputDialog.getText(self, "YouTube -> mp4", config.thisTranslation["youtube_address"],
+                                        QLineEdit.Normal, "")
         if ok and text and QUrl.fromUserInput(text).isValid():
             self.runTextCommand("mp4:::{0}".format(text))
 
-    def setupYouTube(self):
-        webbrowser.open("https://github.com/eliranwong/UniqueBible/wiki/download_youtube_audio_video")
-
     def openYouTube(self):
-        self.youTubeView = YouTubePopover(self)
+        #self.youTubeView = YouTubePopover(self)
+        self.youTubeView = MiniBrowser(self)
         self.youTubeView.show()
 
     # Action - open "images" directory
@@ -2150,13 +1490,27 @@ class MainWindow(QMainWindow):
         else:
             self.firstToolBar.show()
 
+    def showMainToolBar(self):
+        self.firstToolBar.show()
+
+    def hideMainToolBar(self):
+        self.firstToolBar.hide()
+
     def hideShowSecondaryToolBar(self):
         if self.secondToolBar.isVisible():
-            self.studyBibleToolBar.hide()
+            if not config.noStudyBibleToolbar:
+                self.studyBibleToolBar.hide()
             self.secondToolBar.hide()
         else:
-            self.setStudyBibleToolBar()
+            if not config.noStudyBibleToolbar:
+                self.setStudyBibleToolBar()
             self.secondToolBar.show()
+
+    def showSecondaryToolBar(self):
+        self.secondToolBar.show()
+
+    def hideSecondaryToolBar(self):
+        self.secondToolBar.hide()
 
     def hideShowLeftToolBar(self):
         if self.leftToolBar.isVisible():
@@ -2164,10 +1518,30 @@ class MainWindow(QMainWindow):
         else:
             self.leftToolBar.show()
 
+    def hideLeftToolBar(self):
+        self.leftToolBar.hide()
+
+    def showLeftToolBar(self):
+        self.leftToolBar.show()
+
     def hideShowRightToolBar(self):
         if self.rightToolBar.isVisible():
             self.rightToolBar.hide()
         else:
+            self.rightToolBar.show()
+
+    def hideRightToolBar(self):
+        self.rightToolBar.hide()
+
+    def showRightToolBar(self):
+        self.rightToolBar.show()
+
+    def hideShowSideToolBars(self):
+        if self.leftToolBar.isVisible():
+            self.leftToolBar.hide()
+            self.rightToolBar.hide()
+        else:
+            self.leftToolBar.show()
             self.rightToolBar.show()
 
     def hideShowAdditionalToolBar(self):
@@ -2181,12 +1555,14 @@ class MainWindow(QMainWindow):
         self.firstToolBar.show()
         config.noToolBar = False
         if config.topToolBarOnly:
-            self.studyBibleToolBar.hide()
+            if not config.noStudyBibleToolbar:
+                self.studyBibleToolBar.hide()
             self.secondToolBar.hide()
             self.leftToolBar.hide()
             self.rightToolBar.hide()
         else:
-            self.setStudyBibleToolBar()
+            if not config.noStudyBibleToolbar:
+                self.setStudyBibleToolBar()
             self.secondToolBar.show()
             self.leftToolBar.show()
             self.rightToolBar.show()
@@ -2202,7 +1578,8 @@ class MainWindow(QMainWindow):
     def showAllToolBar(self):
         config.topToolBarOnly = False
         self.firstToolBar.show()
-        self.setStudyBibleToolBar()
+        if not config.noStudyBibleToolbar:
+            self.setStudyBibleToolBar()
         self.secondToolBar.show()
         self.leftToolBar.show()
         self.rightToolBar.show()
@@ -2210,24 +1587,63 @@ class MainWindow(QMainWindow):
     def hideAllToolBar(self):
         config.topToolBarOnly = False
         self.firstToolBar.hide()
-        self.studyBibleToolBar.hide()
+        if not config.noStudyBibleToolbar:
+            self.studyBibleToolBar.hide()
         self.secondToolBar.hide()
         self.leftToolBar.hide()
         self.rightToolBar.hide()
 
     # Actions - book features
+    def installBooks(self):
+        if self.textCommandParser.isDatabaseInstalled("book"):
+            self.displayMessage(config.thisTranslation["message_installed"])
+        else:
+            self.textCommandParser.databaseNotInstalled("book")
+
     def openBookMenu(self):
-        self.runTextCommand("BOOK:::{0}".format(config.book), True, "main")
+        if self.textCommandParser.isDatabaseInstalled("book"):
+            if config.refButtonClickAction == "master":
+                self.openControlPanelTab(1)
+            elif config.refButtonClickAction == "mini":
+                self.openControlPanelTab(1)
+            elif config.refButtonClickAction == "direct":
+                self.openBook()
+            else:
+                self.openControlPanelTab(1)
+        else:
+            self.textCommandParser.databaseNotInstalled("book")
+
+    def openBook(self):
+        if hasattr(config, "bookChapNum"):
+            self.runTextCommand("BOOK:::{0}:::{1}".format(config.book, config.bookChapNum), True, "main")
+        else:
+            self.runTextCommand("BOOK:::{0}".format(config.book), True, "main")
+
+    def openBookPreviousChapter(self):
+        if hasattr(config, "bookChapNum"):
+            config.bookChapNum -= 1
+            if config.bookChapNum < 1:
+                config.bookChapNum = 1
+            self.newTabException = True
+            self.runTextCommand("BOOK:::{0}:::{1}".format(config.book, config.bookChapNum), True, "main")
+
+    def openBookNextChapter(self):
+        if hasattr(config, "bookChapNum"):
+            book = Book(config.book)
+            if config.bookChapNum < book.getChapterCount():
+                config.bookChapNum += 1
+            self.newTabException = True
+            self.runTextCommand("BOOK:::{0}:::{1}".format(config.book, config.bookChapNum), True, "main")
 
     def displaySearchBookCommand(self):
         config.bookSearchString = ""
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCHBOOK:::{0}:::".format(config.book))
-        self.textCommandLineEdit.setFocus()
 
     def displaySearchAllBookCommand(self):
         config.bookSearchString = ""
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCHBOOK:::ALL:::")
-        self.textCommandLineEdit.setFocus()
 
     def clearBookHighlights(self):
         config.bookSearchString = ""
@@ -2239,8 +1655,8 @@ class MainWindow(QMainWindow):
 
     def displaySearchFavBookCommand(self):
         config.bookSearchString = ""
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCHBOOK:::FAV:::")
-        self.textCommandLineEdit.setFocus()
 
     def getBookName(self, book):
         return book.replace("_", " ")
@@ -2276,18 +1692,31 @@ class MainWindow(QMainWindow):
         self.runTextCommand("BOOK:::{0}".format(config.favouriteBooks[9]), True, "main")
 
     def openBookDialog(self):
-        bookData = BookData()
-        items = [book for book, *_ in bookData.getBookList()]
-        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["menu10_dialog"], items, items.index(config.book), False)
-        if ok and item:
-            self.runTextCommand("BOOK:::{0}".format(item), True, "main")
+        if self.textCommandParser.isDatabaseInstalled("book"):
+            self.openControlPanelTab(1)
+        else:
+            self.textCommandParser.databaseNotInstalled("book")
+
+    #        bookData = BookData()
+    #        items = [book for book, *_ in bookData.getBookList()]
+    #        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["menu10_dialog"], items, items.index(config.book), False)
+    #        if ok and item:
+    #            self.runTextCommand("BOOK:::{0}".format(item), True, "main")
 
     def setTabNumberDialog(self):
         integer, ok = QInputDialog.getInt(self,
-                "UniqueBible", config.thisTranslation["menu1_tabNo"], config.numberOfTab, 1, 20, 1)
+                                          "UniqueBible", config.thisTranslation["menu1_tabNo"], config.numberOfTab, 1,
+                                          20, 1)
         if ok:
             config.numberOfTab = integer
             self.displayMessage(config.thisTranslation["message_restart"])
+
+    def setMaximumHistoryRecordDialog(self):
+        integer, ok = QInputDialog.getInt(self,
+                                          "UniqueBible", config.thisTranslation["setMaximumHistoryRecord"], config.maximumHistoryRecord, 5,
+                                          100, 1)
+        if ok:
+            config.maximumHistoryRecord = integer
 
     def moreConfigOptionsDialog(self):
         self.moreConfigOptions = MoreConfigOptions(self)
@@ -2296,12 +1725,14 @@ class MainWindow(QMainWindow):
     def addFavouriteBookDialog(self):
         bookData = BookData()
         items = [book for book, *_ in bookData.getBookList()]
-        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["menu10_addFavourite"], items, items.index(config.book), False)
+        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["menu10_addFavourite"], items,
+                                        items.index(config.book), False)
         if ok and item:
             config.favouriteBooks.insert(0, item)
             if len(config.favouriteBooks) > 10:
                 config.favouriteBooks = [book for counter, book in enumerate(config.favouriteBooks) if counter < 10]
-            self.displayMessage("{0}  {1}".format(config.thisTranslation["message_done"], config.thisTranslation["message_restart"]))
+            self.displayMessage(
+                "{0}  {1}".format(config.thisTranslation["message_done"], config.thisTranslation["message_restart"]))
 
     def toggleDisplayBookContent(self):
         if config.bookOnNewWindow:
@@ -2314,172 +1745,245 @@ class MainWindow(QMainWindow):
     def searchBookDialog(self):
         bookData = BookData()
         items = [book for book, *_ in bookData.getBookList()]
-        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["menu10_dialog"], items, items.index(config.book), False)
+        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["menu10_dialog"], items,
+                                        items.index(config.book), False)
         if ok and item:
+            self.focusCommandLineField()
             self.textCommandLineEdit.setText("SEARCHBOOK:::{0}:::".format(item))
-            self.textCommandLineEdit.setFocus()
 
     def search3rdDictionaryDialog(self):
         items = ThirdPartyDictionary(self.textCommandParser.isThridPartyDictionary(config.thirdDictionary)).moduleList
-        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["menu5_3rdDict"], items, items.index(config.thirdDictionary), False)
+        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["menu5_3rdDict"], items,
+                                        items.index(config.thirdDictionary), False)
         if ok and item:
+            self.focusCommandLineField()
             self.textCommandLineEdit.setText("SEARCHTHIRDDICTIONARY:::{0}:::".format(item))
-            self.textCommandLineEdit.setFocus()
 
     def searchDictionaryDialog(self):
         indexes = IndexesSqlite()
         dictionaryDict = {abb: name for abb, name in indexes.dictionaryList}
         lastDictionary = dictionaryDict[config.dictionary]
         dictionaryDict = {name: abb for abb, name in indexes.dictionaryList}
-        items = [key for key in dictionaryDict.keys()]
-        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["context1_dict"], items, items.index(lastDictionary), False)
+        items = list(dictionaryDict.keys())
+        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["context1_dict"], items,
+                                        items.index(lastDictionary), False)
         if ok and item:
+            self.focusCommandLineField()
             self.textCommandLineEdit.setText("SEARCHTOOL:::{0}:::".format(dictionaryDict[item]))
-            self.textCommandLineEdit.setFocus()
 
     def searchEncyclopediaDialog(self):
         indexes = IndexesSqlite()
         dictionaryDict = {abb: name for abb, name in indexes.encyclopediaList}
         lastDictionary = dictionaryDict[config.encyclopedia]
         dictionaryDict = {name: abb for abb, name in indexes.encyclopediaList}
-        items = [key for key in dictionaryDict.keys()]
-        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["context1_encyclopedia"], items, items.index(lastDictionary), False)
+        items = list(dictionaryDict.keys())
+        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["context1_encyclopedia"], items,
+                                        items.index(lastDictionary), False)
         if ok and item:
+            self.focusCommandLineField()
             self.textCommandLineEdit.setText("SEARCHTOOL:::{0}:::".format(dictionaryDict[item]))
-            self.textCommandLineEdit.setFocus()
 
     def searchTopicDialog(self):
         indexes = IndexesSqlite()
         dictionaryDict = {abb: name for abb, name in indexes.topicList}
         lastDictionary = dictionaryDict[config.topic]
         dictionaryDict = {name: abb for abb, name in indexes.topicList}
-        items = [key for key in dictionaryDict.keys()]
-        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["menu5_topics"], items, items.index(lastDictionary), False)
+        items = list(dictionaryDict.keys())
+        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["menu5_topics"], items,
+                                        items.index(lastDictionary), False)
         if ok and item:
+            self.focusCommandLineField()
             self.textCommandLineEdit.setText("SEARCHTOOL:::{0}:::".format(dictionaryDict[item]))
-            self.textCommandLineEdit.setFocus()
 
     # Action - bible search commands
     def displaySearchBibleCommand(self):
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCH:::{0}:::".format(config.mainText))
-        self.textCommandLineEdit.setFocus()
 
     def displaySearchStudyBibleCommand(self):
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCH:::{0}:::".format(config.studyText))
-        self.textCommandLineEdit.setFocus()
 
     def displaySearchBibleMenu(self):
-        self.runTextCommand("_menu:::", False, "main")
+        self.openControlPanelTab(2)
+
+    def displaySearchHighlightCommand(self):
+        self.focusCommandLineField()
+        self.textCommandLineEdit.setText("SEARCHHIGHLIGHT:::")
 
     # Action - other search commands
     def searchCommandChapterNote(self):
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCHCHAPTERNOTE:::")
-        self.textCommandLineEdit.setFocus()
 
     def searchCommandVerseNote(self):
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCHVERSENOTE:::")
-        self.textCommandLineEdit.setFocus()
+
+    def searchCommandBookNote(self):
+        self.focusCommandLineField()
+        self.textCommandLineEdit.setText("SEARCHBOOKNOTE:::")
 
     def searchCommandBibleDictionary(self):
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCHTOOL:::{0}:::".format(config.dictionary))
-        self.textCommandLineEdit.setFocus()
 
     def searchCommandBibleEncyclopedia(self):
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCHTOOL:::{0}:::".format(config.encyclopedia))
-        self.textCommandLineEdit.setFocus()
 
     def searchCommandBibleCharacter(self):
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCHTOOL:::EXLBP:::")
-        self.textCommandLineEdit.setFocus()
 
     def searchCommandBibleName(self):
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCHTOOL:::HBN:::")
-        self.textCommandLineEdit.setFocus()
 
     def searchCommandBibleLocation(self):
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCHTOOL:::EXLBL:::")
-        self.textCommandLineEdit.setFocus()
 
     def searchCommandBibleTopic(self):
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCHTOOL:::{0}:::".format(config.topic))
-        self.textCommandLineEdit.setFocus()
 
     def searchCommandAllBibleTopic(self):
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCHTOOL:::EXLBT:::")
-        self.textCommandLineEdit.setFocus()
 
     def searchCommandLexicon(self):
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("LEXICON:::")
-        self.textCommandLineEdit.setFocus()
 
     def searchCommandThirdPartyDictionary(self):
+        self.focusCommandLineField()
         self.textCommandLineEdit.setText("SEARCHTHIRDDICTIONARY:::")
-        self.textCommandLineEdit.setFocus()
 
     # Actions - open urls
+    def openWebsite(self, url):
+        command = "ONLINE:::{0}".format(url)
+        self.textCommandLineEdit.setText(command)
+        self.runTextCommand(command)
+
+    def setupYouTube(self):
+        self.openWebsite("https://github.com/eliranwong/UniqueBible/wiki/Download-Youtube-audio-video")
+
+    def setupGist(self):
+        self.openWebsite("https://github.com/eliranwong/UniqueBible/wiki/Gist-synching")
+
+    def setupWatsonTranslator(self):
+        self.openWebsite("https://github.com/eliranwong/UniqueBible/wiki/IBM-Watson-Language-Translator")
+
     def openUbaWiki(self):
-        webbrowser.open("https://github.com/eliranwong/UniqueBible/wiki")
+        self.openWebsite("https://github.com/eliranwong/UniqueBible/wiki")
+
+    def openUbaDiscussions(self):
+        self.openWebsite("https://github.com/eliranwong/UniqueBible/discussions")
 
     def openBibleTools(self):
-        webbrowser.open("https://bibletools.app")
+        self.openWebsite("https://bibletools.app")
 
     def openUniqueBible(self):
-        webbrowser.open("https://uniquebible.app")
+        self.openWebsite("https://uniquebible.app")
 
     def openMarvelBible(self):
-        webbrowser.open("https://marvel.bible")
+        self.openWebsite("https://marvel.bible")
 
     def openBibleBento(self):
-        webbrowser.open("https://biblebento.com")
+        self.openWebsite("https://biblebento.com")
 
     def openOpenGNT(self):
-        webbrowser.open("https://opengnt.com")
+        self.openWebsite("https://opengnt.com")
 
     def openSource(self):
-        webbrowser.open("https://github.com/eliranwong/")
+        self.openWebsite("https://github.com/eliranwong/")
 
     def openUniqueBibleSource(self):
-        webbrowser.open("https://github.com/eliranwong/UniqueBible")
+        self.openWebsite("https://github.com/eliranwong/UniqueBible")
 
     def openHebrewBibleSource(self):
-        webbrowser.open("https://github.com/eliranwong/OpenHebrewBible")
+        self.openWebsite("https://github.com/eliranwong/OpenHebrewBible")
 
     def openOpenGNTSource(self):
-        webbrowser.open("https://github.com/eliranwong/OpenGNT")
+        self.openWebsite("https://github.com/eliranwong/OpenGNT")
 
     def openCredits(self):
-        webbrowser.open("https://marvel.bible/resource.php")
+        self.openWebsite("https://marvel.bible/resource.php")
 
     def contactEliranWong(self):
-        webbrowser.open("https://marvel.bible/contact/contactform.php")
+        self.openWebsite("https://marvel.bible/contact/contactform.php")
+
+    def reportAnIssue(self):
+        self.openWebsite("https://github.com/eliranwong/UniqueBible/issues")
 
     def goToSlack(self):
-        webbrowser.open("https://marvelbible.slack.com")
+        self.openWebsite("https://marvelbible.slack.com")
 
     def donateToUs(self):
-        webbrowser.open("https://www.paypal.me/MarvelBible")
+        self.openWebsite("https://www.paypal.me/MarvelBible")
 
     def moreBooks(self):
-        webbrowser.open("https://github.com/eliranwong/UniqueBible/wiki/download_3rd_party_modules")
+        self.openWebsite("https://github.com/eliranwong/UniqueBible/wiki/Download-3rd-party-modules")
+
+    def openBrowser(self, url):
+        self.openWebsite(url)
 
     # Actions - resize the main window
     def fullsizeWindow(self):
         self.resizeWindow(1, 1)
+        self.moveWindow(0, 0)
 
     def twoThirdWindow(self):
-        self.resizeWindow(2/3, 2/3)
+        self.resizeWindow(2 / 3, 2 / 3)
+        self.moveWindow(1 / 6, 1 / 6)
 
-    def halfScreenHeight(self):
-        self.resizeWindow(1, 1/2)
+    def topHalfScreenHeight(self):
+        self.resizeWindow(1, 1 / 2)
+        self.moveWindow(0, 0)
 
-    def halfScreenWidth(self):
-        self.resizeWindow(1/2, 1)
+    def bottomHalfScreenHeight(self):
+        self.resizeWindow(1, 1 / 2)
+        self.moveWindow(0, 1 / 2)
+
+    def leftHalfScreenWidth(self):
+        self.resizeWindow(1 / 2, 1)
+        self.moveWindow(0, 0)
+
+    def rightHalfScreenWidth(self):
+        self.resizeWindow(1 / 2, 1)
+        self.moveWindow(1 / 2, 0)
 
     def resizeWindow(self, widthFactor, heightFactor):
-        availableGeometry = qApp.desktop().availableGeometry()
+        availableGeometry = QGuiApplication.instance().desktop().availableGeometry()
         self.resize(availableGeometry.width() * widthFactor, availableGeometry.height() * heightFactor)
 
-    # Actions - enable or disable sync commentary
+    def moveWindow(self, horizontal, vertical):
+        screen = QGuiApplication.instance().desktop().availableGeometry()
+        x = screen.width() * float(horizontal)
+        y = screen.height() * float(vertical)
+        self.move(x, y)
+
+    # Actions - enable or disable enforcement of comparison / parallel
+    def getEnableCompareParallelDisplay(self):
+        if config.enforceCompareParallel:
+            return "sync.png"
+        else:
+            return "noSync.png"
+
+    def getEnableCompareParallelDisplayToolTip(self):
+        if config.enforceCompareParallel:
+            return config.thisTranslation["menu4_enableEnforceCompareParallel"]
+        else:
+            return config.thisTranslation["menu4_disableEnforceCompareParallel"]
+
+    def enforceCompareParallelButtonClicked(self):
+        config.enforceCompareParallel = not config.enforceCompareParallel
+        enforceCompareParallelButtonFile = os.path.join("htmlResources", self.getEnableCompareParallelDisplay())
+        self.enforceCompareParallelButton.setIcon(QIcon(enforceCompareParallelButtonFile))
+        self.enforceCompareParallelButton.setToolTip(self.getEnableCompareParallelDisplayToolTip())
+
+    # Actions - enable or disable sync main and secondary bibles
     def getSyncStudyWindowBibleDisplay(self):
         if config.syncStudyWindowBibleWithMainWindow:
             return "sync.png"
@@ -2548,10 +2052,18 @@ class MainWindow(QMainWindow):
     def enableStudyBibleButtonClicked(self):
         if config.openBibleInMainViewOnly:
             config.openBibleInMainViewOnly = False
-            self.studyBibleToolBar.show()
+            if config.noStudyBibleToolbar:
+                self.studyRefButton.setVisible(True)
+                self.enableSyncStudyWindowBibleButton.setVisible(True)
+            else:
+                self.studyBibleToolBar.show()
         else:
             config.openBibleInMainViewOnly = True
-            self.studyBibleToolBar.hide()
+            if config.noStudyBibleToolbar:
+                self.studyRefButton.setVisible(False)
+                self.enableSyncStudyWindowBibleButton.setVisible(False)
+            else:
+                self.studyBibleToolBar.hide()
         enableStudyBibleButtonFile = os.path.join("htmlResources", self.getStudyBibleDisplay())
         self.enableStudyBibleButton.setIcon(QIcon(enableStudyBibleButtonFile))
         self.enableStudyBibleButton.setToolTip(self.getStudyBibleDisplayToolTip())
@@ -2571,11 +2083,31 @@ class MainWindow(QMainWindow):
         enableInstantButtonFile = os.path.join("htmlResources", self.getInstantInformation())
         self.enableInstantButton.setIcon(QIcon(enableInstantButtonFile))
 
+    def enableInstantInformation(self):
+        config.instantInformationEnabled = True
+        enableInstantButtonFile = os.path.join("htmlResources", self.getInstantInformation())
+        self.enableInstantButton.setIcon(QIcon(enableInstantButtonFile))
+
+    def disableInstantInformation(self):
+        config.instantInformationEnabled = False
+        enableInstantButtonFile = os.path.join("htmlResources", self.getInstantInformation())
+        self.enableInstantButton.setIcon(QIcon(enableInstantButtonFile))
+
     # Actions - enable or disable paragraphs feature
     def displayBiblesInParagraphs(self):
         config.readFormattedBibles = not config.readFormattedBibles
         self.newTabException = True
-        self.reloadCurrentRecord()
+        self.reloadCurrentRecord(True)
+
+    def enableBiblesInParagraphs(self):
+        config.readFormattedBibles = True
+        self.newTabException = True
+        self.reloadCurrentRecord(True)
+
+    def disableBiblesInParagraphs(self):
+        config.readFormattedBibles = False
+        self.newTabException = True
+        self.reloadCurrentRecord(True)
 
     def getReadFormattedBibles(self):
         if config.readFormattedBibles:
@@ -2601,7 +2133,7 @@ class MainWindow(QMainWindow):
 
     def enableSubheadingButtonClicked(self):
         config.addTitleToPlainChapter = not config.addTitleToPlainChapter
-        self.newTabException = True        
+        self.newTabException = True
         self.reloadCurrentRecord()
         enableSubheadingButtonFile = os.path.join("htmlResources", self.getAddSubheading())
         self.enableSubheadingButton.setIcon(QIcon(enableSubheadingButtonFile))
@@ -2610,12 +2142,25 @@ class MainWindow(QMainWindow):
     def smallerFont(self):
         if not config.fontSize == 5:
             config.fontSize = config.fontSize - 1
-            self.defaultFontButton.setText("{0} {1}".format(config.font, config.fontSize))
+            if hasattr(self, 'defaultFontButton'):
+                self.defaultFontButton.setText("{0} {1}".format(config.font, config.fontSize))
             self.reloadCurrentRecord(forceExecute=True)
 
     def largerFont(self):
         config.fontSize = config.fontSize + 1
-        self.defaultFontButton.setText("{0} {1}".format(config.font, config.fontSize))
+        if hasattr(self, 'defaultFontButton'):
+            self.defaultFontButton.setText("{0} {1}".format(config.font, config.fontSize))
+        self.reloadCurrentRecord(forceExecute=True)
+
+    def setFontSize(self, size):
+        config.fontSize = size
+        if hasattr(self, 'defaultFontButton'):
+            self.defaultFontButton.setText("{0} {1}".format(config.font, config.fontSize))
+        self.reloadCurrentRecord(forceExecute=True)
+
+    def toggleHighlightMarker(self):
+        config.showHighlightMarkers = not config.showHighlightMarkers
+        config.readFormattedBibles = False
         self.reloadCurrentRecord(forceExecute=True)
 
     def reloadCurrentRecord(self, forceExecute=False):
@@ -2623,14 +2168,14 @@ class MainWindow(QMainWindow):
             mappedBibles = (
                 ("MIB", "OHGBi"),
                 ("MOB", "OHGB"),
-                #("LXX1", "LXX1i"),
-                #("LXX2i", "LXX2"),
+                # ("LXX1", "LXX1i"),
+                # ("LXX2i", "LXX2"),
             )
             for view in ("main", "study"):
                 textCommand = config.history[view][config.currentRecord[view]]
                 for formattedBible, plainBible in mappedBibles:
                     textCommand = textCommand.replace(plainBible, formattedBible)
-                    self.runTextCommand(textCommand, False, view, forceExecute)
+                self.runTextCommand(textCommand, False, view, forceExecute)
         else:
             mappedBibles = (
                 ("MIB", "OHGBi"),
@@ -2638,73 +2183,153 @@ class MainWindow(QMainWindow):
                 ("MPB", "OHGB"),
                 ("MTB", "OHGB"),
                 ("MAB", "OHGB"),
-                #("LXX1", "LXX1i"),
-                #("LXX2i", "LXX2"),
+                # ("LXX1", "LXX1i"),
+                # ("LXX2i", "LXX2"),
             )
             for view in ("main", "study"):
                 textCommand = config.history[view][config.currentRecord[view]]
                 for formattedBible, plainBible in mappedBibles:
                     textCommand = textCommand.replace(formattedBible, plainBible)
-                    self.runTextCommand(textCommand, False, view, forceExecute)
+                self.runTextCommand(textCommand, False, view, forceExecute)
 
     # Actions - previous / next chapter
     def previousMainChapter(self):
         newChapter = config.mainC - 1
+        if newChapter == 0:
+            if config.mainB == 1:
+                newChapter = 1
+            else:
+                config.mainB -= 1
+                newChapter = BibleBooks.getLastChapter(config.mainB)
         biblesSqlite = BiblesSqlite()
-        mainChapterList = biblesSqlite.getChapterList()
+        mainChapterList = biblesSqlite.getChapterList(config.mainB)
         del biblesSqlite
-        if newChapter in mainChapterList:
+        if newChapter in mainChapterList or config.menuLayout == "aleph":
             self.newTabException = True
             newTextCommand = self.bcvToVerseReference(config.mainB, newChapter, 1)
             self.textCommandChanged(newTextCommand, "main")
 
     def nextMainChapter(self):
-        newChapter = config.mainC + 1
+        if config.mainC < BibleBooks.getLastChapter(config.mainB):
+            newChapter = config.mainC + 1
+        elif config.mainB < 66:
+            newChapter = 1
+            config.mainB += 1
         biblesSqlite = BiblesSqlite()
-        mainChapterList = biblesSqlite.getChapterList()
+        mainChapterList = biblesSqlite.getChapterList(config.mainB)
         del biblesSqlite
-        if newChapter in mainChapterList:
+        if newChapter in mainChapterList or config.menuLayout == "aleph":
             self.newTabException = True
             newTextCommand = self.bcvToVerseReference(config.mainB, newChapter, 1)
             self.textCommandChanged(newTextCommand, "main")
+
+    def gotoFirstChapter(self):
+        config.mainC = 1
+        self.newTabException = True
+        newTextCommand = self.bcvToVerseReference(config.mainB, config.mainC, 1)
+        self.textCommandChanged(newTextCommand, "main")
+
+    def gotoLastChapter(self):
+        config.mainC = BibleBooks.getLastChapter(config.mainB)
+        self.newTabException = True
+        newTextCommand = self.bcvToVerseReference(config.mainB, config.mainC, 1)
+        self.textCommandChanged(newTextCommand, "main")
+
+    def previousMainBook(self):
+        config.mainC = 1
+        if config.mainB > 1:
+            config.mainB = config.mainB - 1
+        newTextCommand = self.bcvToVerseReference(config.mainB, config.mainC, 1)
+        self.textCommandChanged(newTextCommand, "main")
+
+    def nextMainBook(self):
+        config.mainC = 1
+        if config.mainB < 66:
+            config.mainB = config.mainB + 1
+        newTextCommand = self.bcvToVerseReference(config.mainB, config.mainC, 1)
+        self.textCommandChanged(newTextCommand, "main")
 
     def openMainChapter(self):
         newTextCommand = self.bcvToVerseReference(config.mainB, config.mainC, config.mainV)
         self.textCommandChanged(newTextCommand, "main")
 
+    def openStudyChapter(self):
+        newTextCommand = self.bcvToVerseReference(config.studyB, config.studyC, config.studyV)
+        self.textCommandChanged(newTextCommand, "study")
+
+    def openCommentary(self):
+        command = "COMMENTARY:::{0}".format(self.verseReference("main")[1])
+        self.textCommandChanged(command, "study")
+        command = "_commentaryinfo:::{0}".format(config.commentaryText)
+        self.runTextCommand(command)
+
     # Actions - recently opened bibles & commentary
     def mainTextMenu(self):
-        newTextCommand = "_menu:::"
-        self.runTextCommand(newTextCommand, False, "main")
+        self.openControlPanelTab(0)
 
     def studyTextMenu(self):
-        newTextCommand = "_menu:::"
-        self.runTextCommand(newTextCommand, False, "study")
+        self.openControlPanelTab(0)
 
     def bookFeatures(self):
-        newTextCommand = "_menu:::{0}.{1}".format(config.mainText, config.mainB)
-        self.runTextCommand(newTextCommand, False, "main")
+        self.openControlPanelTab(0)
 
     def chapterFeatures(self):
-        newTextCommand = "_menu:::{0}.{1}.{2}".format(config.mainText, config.mainB, config.mainC)
-        self.runTextCommand(newTextCommand, False, "main")
+        self.openControlPanelTab(0)
 
     def mainRefButtonClicked(self):
-        newTextCommand = "_menu:::{0}.{1}.{2}.{3}".format(config.mainText, config.mainB, config.mainC, config.mainV)
-        self.runTextCommand(newTextCommand, False, "main")
+        if config.refButtonClickAction == "master":
+            self.openControlPanelTab(0)
+        elif config.refButtonClickAction == "mini":
+            self.openMiniControlTab(0)
+        elif config.refButtonClickAction == "direct":
+            self.openMainChapter()
+        else:
+            self.openControlPanelTab(0)
 
     def studyRefButtonClicked(self):
-        newTextCommand = "_menu:::{0}.{1}.{2}.{3}".format(config.studyText, config.studyB, config.studyC, config.studyV)
-        self.runTextCommand(newTextCommand, False, "study")
+        if config.refButtonClickAction == "master":
+            self.openControlPanelTab(0, config.studyB, config.studyC, config.studyV, config.studyText)
+        elif config.refButtonClickAction == "mini":
+            self.openControlPanelTab(0, config.studyB, config.studyC, config.studyV, config.studyText)
+        elif config.refButtonClickAction == "direct":
+            self.openStudyChapter()
+        else:
+            self.openControlPanelTab(0, config.studyB, config.studyC, config.studyV, config.studyText)
 
     def commentaryRefButtonClicked(self):
-        newTextCommand = "_commentary:::{0}.{1}.{2}.{3}".format(config.commentaryText, config.commentaryB, config.commentaryC, config.commentaryV)
-        self.runTextCommand(newTextCommand, False, "study")
+        if self.textCommandParser.isDatabaseInstalled("commentary"):
+            if config.refButtonClickAction == "master":
+                self.openControlPanelTab(1)
+            elif config.refButtonClickAction == "mini":
+                self.openMiniControlTab(2)
+            elif config.refButtonClickAction == "direct":
+                self.openCommentary()
+            else:
+                self.openControlPanelTab(1)
+        else:
+            self.textCommandParser.databaseNotInstalled("commentary")
+
+    def changeBibleVersion(self, index):
+        if not self.refreshing:
+            command = "TEXT:::{0}".format(self.bibleVersions[index])
+            self.runTextCommand(command)
+
+    def updateVersionCombo(self):
+        if self.versionCombo is not None and config.menuLayout in ("focus", "Starter"):
+            self.refreshing = True
+            textIndex = 0
+            if config.mainText in self.bibleVersions:
+                textIndex = self.bibleVersions.index(config.mainText)
+            self.versionCombo.setCurrentIndex(textIndex)
+            self.refreshing = False
 
     def updateMainRefButton(self):
-        text, verseReference = self.verseReference("main")
-        self.mainTextMenuButton.setText(text)
-        self.mainRefButton.setText(verseReference)
+        *_, verseReference = self.verseReference("main")
+        if config.menuLayout == "aleph":
+            self.mainRefButton.setText(":::".join(self.verseReference("main")))
+        else:
+            self.mainRefButton.setText(self.verseReference("main")[-1])
+        self.updateVersionCombo()
         if config.syncStudyWindowBibleWithMainWindow and not config.openBibleInMainViewOnly and not self.syncingBibles:
             self.syncingBibles = True
             newTextCommand = "STUDY:::{0}".format(verseReference)
@@ -2716,8 +2341,7 @@ class MainWindow(QMainWindow):
 
     def updateStudyRefButton(self):
         text, verseReference = self.verseReference("study")
-        self.studyTextMenuButton.setText(text)
-        self.studyRefButton.setText(verseReference)
+        self.studyRefButton.setText(":::".join(self.verseReference("study")))
         if config.syncStudyWindowBibleWithMainWindow and not config.openBibleInMainViewOnly and not self.syncingBibles:
             self.syncingBibles = True
             newTextCommand = "MAIN:::{0}".format(verseReference)
@@ -2732,21 +2356,29 @@ class MainWindow(QMainWindow):
         elif view == "study":
             return (config.studyText, self.bcvToVerseReference(config.studyB, config.studyC, config.studyV))
         elif view == "commentary":
-            return "{0} - {1}".format(config.commentaryText, self.bcvToVerseReference(config.commentaryB, config.commentaryC, config.commentaryV))
+            return "{0}:::{1}".format(config.commentaryText,
+                                      self.bcvToVerseReference(config.commentaryB, config.commentaryC,
+                                                               config.commentaryV))
 
     # Actions - access history records
     def mainHistoryButtonClicked(self):
-        self.mainView.setHtml(self.getHistory("main"), baseUrl)
+        self.openControlPanelTab(3)
+        # self.mainView.setHtml(self.getHistory("main"), baseUrl)
 
     def studyHistoryButtonClicked(self):
-        self.studyView.setHtml(self.getHistory("study"), baseUrl)
+        self.openControlPanelTab(3)
+        # self.studyView.setHtml(self.getHistory("study"), baseUrl)
 
     def getHistory(self, view):
         historyRecords = [(counter, record) for counter, record in enumerate(config.history[view])]
         if view == "external":
-            html = "<br>".join(["<button class='feature' onclick='openExternalRecord({0})'>{1}</button> [<ref onclick='editExternalRecord({0})'>edit</ref>]".format(counter, record) for counter, record in reversed(historyRecords)])
+            html = "<br>".join([
+                                   "<button class='feature' onclick='openExternalRecord({0})'>{1}</button> [<ref onclick='editExternalRecord({0})'>edit</ref>]".format(
+                                       counter, record) for counter, record in reversed(historyRecords)])
         else:
-            html = "<br>".join(["<button class='feature' onclick='openHistoryRecord({0})'>{1}</button>".format(counter, record) for counter, record in reversed(historyRecords)])
+            html = "<br>".join(
+                ["<button class='feature' onclick='openHistoryRecord({0})'>{1}</button>".format(counter, record) for
+                 counter, record in reversed(historyRecords)])
         html = self.htmlWrapper(html)
         return html
 
@@ -2789,16 +2421,24 @@ class MainWindow(QMainWindow):
     # finish view loading
     def finishMainViewLoading(self):
         # scroll to the main verse
-        self.mainPage.runJavaScript("var activeVerse = document.getElementById('v"+str(config.mainB)+"."+str(config.mainC)+"."+str(config.mainV)+"'); if (typeof(activeVerse) != 'undefined' && activeVerse != null) { activeVerse.scrollIntoView(); activeVerse.style.color = 'red'; } else { document.getElementById('v0.0.0').scrollIntoView(); }")
+        self.mainPage.runJavaScript(
+            "var activeVerse = document.getElementById('v" + str(config.mainB) + "." + str(config.mainC) + "." + str(
+                config.mainV) + "'); if (typeof(activeVerse) != 'undefined' && activeVerse != null) { activeVerse.scrollIntoView(); activeVerse.style.color = 'red'; } else if (document.getElementById('v0.0.0') != null) { document.getElementById('v0.0.0').scrollIntoView(); }")
 
     def finishStudyViewLoading(self):
         # scroll to the study verse
-        self.studyPage.runJavaScript("var activeVerse = document.getElementById('v"+str(config.studyB)+"."+str(config.studyC)+"."+str(config.studyV)+"'); if (typeof(activeVerse) != 'undefined' && activeVerse != null) { activeVerse.scrollIntoView(); activeVerse.style.color = 'red'; } else { document.getElementById('v0.0.0').scrollIntoView(); }")
+        self.studyPage.runJavaScript(
+            "var activeVerse = document.getElementById('v" + str(config.studyB) + "." + str(config.studyC) + "." + str(
+                config.studyV) + "'); if (typeof(activeVerse) != 'undefined' && activeVerse != null) { activeVerse.scrollIntoView(); activeVerse.style.color = 'red'; } else if (document.getElementById('v0.0.0') != null) { document.getElementById('v0.0.0').scrollIntoView(); }")
 
     # finish pdf printing
     def pdfPrintingFinishedAction(self, filePath, success):
         if success:
-            self.openExternalFile(filePath, isPdf=True)
+            if self.pdfOpened:
+                self.pdfOpened = False
+            else:
+                self.openExternalFile(filePath, isPdf=True)
+                self.pdfOpened = True
         else:
             print("Failed to print pdf")
 
@@ -2822,6 +2462,12 @@ class MainWindow(QMainWindow):
 
     def runMTB(self):
         self.runFeature("BIBLE:::MTB")
+
+    def runTransliteralBible(self):
+        self.runFeature("BIBLE:::TRLIT")
+
+    def runKJV2Bible(self):
+        self.runFeature("BIBLE:::KJV+")
 
     def runCOMPARE(self):
         self.runFeature("COMPARE")
@@ -2851,11 +2497,15 @@ class MainWindow(QMainWindow):
         self.runFeature("INDEX")
 
     # change of unique bible commands
+
     def mainTextCommandChanged(self, newTextCommand):
-        self.textCommandChanged(newTextCommand, "main")
+        if newTextCommand not in ("main.html", "UniqueBible.app"):
+            self.textCommandChanged(newTextCommand, "main")
 
     def studyTextCommandChanged(self, newTextCommand):
-        self.textCommandChanged(newTextCommand, "study")
+        if newTextCommand not in ("main.html", "UniqueBible.app") \
+                and not newTextCommand.endswith("UniqueBibleApp.png"):
+            self.textCommandChanged(newTextCommand, "study")
 
     def instantTextCommandChanged(self, newTextCommand):
         self.textCommandChanged(newTextCommand, "instant")
@@ -2863,7 +2513,8 @@ class MainWindow(QMainWindow):
     # change of text command detected via change of document.title
     def textCommandChanged(self, newTextCommand, source="main"):
         exceptionTuple = ("UniqueBible.app", "about:blank", "study.html")
-        if not (newTextCommand.startswith("data:text/html;") or newTextCommand.startswith("file:///") or newTextCommand[-4:] == ".txt" or newTextCommand in exceptionTuple):
+        if not (newTextCommand.startswith("data:text/html;") or newTextCommand.startswith("file:///") or newTextCommand[
+                                                                                                         -4:] == ".txt" or newTextCommand in exceptionTuple):
             if source == "main" and not newTextCommand.startswith("_"):
                 self.textCommandLineEdit.setText(newTextCommand)
             if newTextCommand.startswith("_"):
@@ -2877,9 +2528,27 @@ class MainWindow(QMainWindow):
         self.runTextCommand(newTextCommand, True, source)
 
     def runTextCommand(self, textCommand, addRecord=True, source="main", forceExecute=False):
+        textCommandKeyword, *_ = re.split('[ ]*?:::[ ]*?', textCommand, 1)
+        commandFieldText = self.textCommandLineEdit.text()
+        if not re.match("^online:::", commandFieldText, flags=re.IGNORECASE) or (":::" in textCommand and textCommandKeyword in self.textCommandParser.interpreters):
+            self.passRunTextCommand(textCommand, addRecord, source, forceExecute)
+        elif commandFieldText != self.onlineCommand:
+            *_, address = commandFieldText.split(":::")
+            if config.useWebbrowser:
+                webbrowser.open(address)
+            else:
+                if config.openStudyWindowContentOnNextTab:
+                    nextIndex = self.studyView.currentIndex() + 1
+                    if nextIndex >= config.numberOfTab:
+                        nextIndex = 0
+                    self.studyView.setCurrentIndex(nextIndex)
+                self.onlineCommand = commandFieldText
+                self.studyView.load(QUrl(address))
+                self.addHistoryRecord("study", commandFieldText)
+
+    def passRunTextCommand(self, textCommand, addRecord=True, source="main", forceExecute=False):
         if config.logCommands:
-            logger = logging.getLogger('uba')
-            logger.debug(textCommand[:80])
+            self.logger.debug(textCommand[:80])
         # reset document.title
         changeTitle = "document.title = 'UniqueBible.app';"
         self.mainPage.runJavaScript(changeTitle)
@@ -2890,26 +2559,69 @@ class MainWindow(QMainWindow):
         timeDifference = int((now - self.now).total_seconds())
         if textCommand == "_stayOnSameTab:::":
             self.newTabException = True
-        elif (forceExecute or timeDifference > 1 or (source == "main" and textCommand != self.lastMainTextCommand) or \
-            (source == "study" and textCommand != self.lastStudyTextCommand)) and textCommand != "main.html":
+        elif (not forceExecute and (timeDifference <= 1 and ((source == "main" and textCommand == self.lastMainTextCommand) or (source == "study" and textCommand == self.lastStudyTextCommand)))) or textCommand == "main.html":
+            self.logger.debug("Repeated command blocked {0}:{1}".format(textCommand, source))
+        else:
             # handle exception for new tab features
-            if re.search('^(_commentary:::|_menu:::)', textCommand.lower()):
+            if re.search('^(_commentary:::|_menu:::|_vnsc:::)', textCommand.lower()):
                 self.newTabException = True
             # parse command
-            view, content = self.textCommandParser.parser(textCommand, source)
+            view, content, dict = self.textCommandParser.parser(textCommand, source)
             # process content
             if content == "INVALID_COMMAND_ENTERED":
-                self.displayMessage(config.thisTranslation["message_invalid"] + ":" + textCommand)
+                self.displayMessage("{0} '{1}'".format(config.thisTranslation["message_invalid"], textCommand))
+                self.logger.info("{0} '{1}'".format(config.thisTranslation["message_invalid"], textCommand))
             elif view == "command":
+                self.focusCommandLineField()
                 self.textCommandLineEdit.setText(content)
-                self.textCommandLineEdit.setFocus()
             else:
                 activeBCVsettings = ""
+                bibleCss = ""
                 if view == "main":
-                    activeBCVsettings = "<script>var activeText = '{0}'; var activeB = {1}; var activeC = {2}; var activeV = {3};</script>".format(config.mainText, config.mainB, config.mainC, config.mainV)
+                    content = self.instantHighlight(content)
+                    activeBCVsettings = "<script>var activeText = '{0}'; var activeB = {1}; var activeC = {2}; var activeV = {3};</script>".format(
+                        config.mainText, config.mainB, config.mainC, config.mainV)
+                    if hasattr(config, "mainCssBibleFontStyle"):
+                        bibleCss = config.mainCssBibleFontStyle
                 elif view == "study":
-                    activeBCVsettings = "<script>var activeText = '{0}'; var activeB = {1}; var activeC = {2}; var activeV = {3};</script>".format(config.studyText, config.studyB, config.studyC, config.studyV)
-                html = "<!DOCTYPE html><html><head><title>UniqueBible.app</title><style>body {2} font-size: {4}px; font-family:'{5}'; {3} zh {2} font-family:'{6}'; {3}</style><link rel='stylesheet' type='text/css' href='css/{7}.css'><script src='js/{7}.js'></script><script src='w3.js'></script>{0}<script>var versionList = []; var compareList = []; var parallelList = []; var diffList = []; var searchList = [];</script></head><body><span id='v0.0.0'></span>{1}</body></html>".format(activeBCVsettings, content, "{", "}", config.fontSize, config.font, config.fontChinese, config.theme)
+                    activeBCVsettings = "<script>var activeText = '{0}'; var activeB = {1}; var activeC = {2}; var activeV = {3};</script>".format(
+                        config.studyText, config.studyB, config.studyC, config.studyV)
+                    if hasattr(config, "studyCssBibleFontStyle"):
+                        bibleCss = config.studyCssBibleFontStyle
+                fontFamily = config.font
+                fontSize = "{0}px".format(config.fontSize)
+                if textCommand.startswith("BOOK:::"):
+                    if config.overwriteBookFontFamily:
+                        fontFamily = config.overwriteBookFontFamily
+                    if config.overwriteBookFontSize:
+                        if type(config.overwriteBookFontSize) == str:
+                            fontSize = config.overwriteBookFontSize
+                        elif type(config.overwriteBookFontSize) == int:
+                            fontSize = "{0}px".format(config.overwriteBookFontSize)
+                html = ("<!DOCTYPE html><html><head><title>UniqueBible.app</title>"
+                        "<style>body {2} font-size: {4}; font-family:'{5}';{3} "
+                        "zh {2} font-family:'{6}'; {3} "
+                        "{8} {9}</style>"
+                        "<link id='theme_stylesheet' rel='stylesheet' type='text/css' href='css/{7}.css'>"
+                        "<link id='theme_stylesheet' rel='stylesheet' type='text/css' href='css/custom.css'>"
+                        "<script src='js/common.js'></script>"
+                        "<script src='js/{7}.js'></script>"
+                        "<script src='w3.js'></script>"
+                        "<script src='js/custom.js'></script>"
+                        "{0}"
+                        "<script>var versionList = []; var compareList = []; var parallelList = []; "
+                        "var diffList = []; var searchList = [];</script></head>"
+                        "<body><span id='v0.0.0'></span>{1}</body></html>"
+                        ).format(activeBCVsettings,
+                                 content,
+                                 "{",
+                                 "}",
+                                 fontSize,
+                                 fontFamily,
+                                 config.fontChinese,
+                                 config.theme,
+                                 self.getHighlightCss(),
+                                 bibleCss)
                 views = {
                     "main": self.mainView,
                     "study": self.studyView,
@@ -2917,16 +2629,25 @@ class MainWindow(QMainWindow):
                 }
                 # add hovering action to bible reference links
                 searchReplace = (
-                    ('{0}document.title="BIBLE:::([^<>"]*?)"{0}|"document.title={0}BIBLE:::([^<>{0}]*?){0}"'.format("'"), r'{0}document.title="BIBLE:::\1\2"{0} onmouseover={0}document.title="_imvr:::\1\2"{0}'.format("'")),
-                    (r'onclick=([{0}"])bcv\(([0-9]+?),[ ]*?([0-9]+?),[ ]*?([0-9]+?),[ ]*?([0-9]+?),[ ]*?([0-9]+?)\)\1'.format("'"), r'onclick="bcv(\2,\3,\4,\5,\6)" onmouseover="imv(\2,\3,\4,\5,\6)"'),
-                    (r'onclick=([{0}"])bcv\(([0-9]+?),[ ]*?([0-9]+?),[ ]*?([0-9]+?)\)\1'.format("'"), r'onclick="bcv(\2,\3,\4)" onmouseover="imv(\2,\3,\4)"'),
-                    (r'onclick=([{0}"])cr\(([0-9]+?),[ ]*?([0-9]+?),[ ]*?([0-9]+?)\)\1'.format("'"), self.convertCrLink),
+                    (
+                    '{0}document.title="BIBLE:::([^<>"]*?)"{0}|"document.title={0}BIBLE:::([^<>{0}]*?){0}"'.format("'"),
+                    r'{0}document.title="BIBLE:::\1\2"{0} onmouseover={0}document.title="_imvr:::\1\2"{0}'.format("'")),
+                    (
+                    r'onclick=([{0}"])bcv\(([0-9]+?),[ ]*?([0-9]+?),[ ]*?([0-9]+?),[ ]*?([0-9]+?),[ ]*?([0-9]+?)\)\1'.format(
+                        "'"), r'onclick="bcv(\2,\3,\4,\5,\6)" onmouseover="imv(\2,\3,\4,\5,\6)"'),
+                    (r'onclick=([{0}"])bcv\(([0-9]+?),[ ]*?([0-9]+?),[ ]*?([0-9]+?)\)\1'.format("'"),
+                     r'onclick="bcv(\2,\3,\4)" onmouseover="imv(\2,\3,\4)"'),
+                    (
+                    r'onclick=([{0}"])cr\(([0-9]+?),[ ]*?([0-9]+?),[ ]*?([0-9]+?)\)\1'.format("'"), self.convertCrLink),
                 )
                 for search, replace in searchReplace:
                     html = re.sub(search, replace, html)
                 # load into widget view
                 if view == "study":
-                    self.openTextOnStudyView(html)
+                    tab_title = ''
+                    if ('tab_title' in dict.keys()):
+                        tab_title = dict['tab_title']
+                    self.openTextOnStudyView(html, tab_title)
                 elif view == "main":
                     self.openTextOnMainView(html)
                 elif view.startswith("popover"):
@@ -2937,13 +2658,24 @@ class MainWindow(QMainWindow):
                 elif view:
                     views[view].setHtml(html, baseUrl)
                 if addRecord == True and view in ("main", "study"):
-                    self.addHistoryRecord(view, textCommand)
+                    if config.tempRecord:
+                        self.addHistoryRecord(view, config.tempRecord)
+                        config.tempRecord = ""
+                    else:
+                        self.addHistoryRecord(view, textCommand)
             # set checking blocks to prevent running the same command within unreasonable time frame
             self.now = now
             if source == "main":
                 self.lastMainTextCommand = textCommand
             elif source == "study":
                 self.lastStudyTextCommand = textCommand
+
+    def instantHighlight(self, text):
+        if config.instantHighlightString:
+            text = re.sub(config.instantHighlightString, "<z>{0}</z>".format(config.instantHighlightString), text)
+            return TextUtil.fixTextHighlighting(text)
+        else:
+            return text
 
     def convertCrLink(self, match):
         *_, b, c, v = match.groups()
@@ -2957,19 +2689,20 @@ class MainWindow(QMainWindow):
             if not (viewhistory[-1] == textCommand):
                 viewhistory.append(textCommand)
                 # set maximum number of history records for each view here
-                historyRecordAllowed = config.historyRecordAllowed
-                if len(viewhistory) > historyRecordAllowed:
-                    viewhistory = viewhistory[-historyRecordAllowed:]
+                maximumHistoryRecord = config.maximumHistoryRecord
+                if len(viewhistory) > maximumHistoryRecord:
+                    viewhistory = viewhistory[-maximumHistoryRecord:]
                 config.history[view] = viewhistory
                 config.currentRecord[view] = len(viewhistory) - 1
 
     # switch between landscape / portrait mode
+    def setFullIconSize(self, full):
+        config.toolBarIconFullSize = full
+        self.setupMenuLayout(config.menuLayout)
+
     def switchIconSize(self):
-        if config.toolBarIconFullSize:
-            config.toolBarIconFullSize = False
-        else:
-            config.toolBarIconFullSize = True
-        self.displayMessage("{0}  {1}".format(config.thisTranslation["message_done"], config.thisTranslation["message_restart"]))
+        config.toolBarIconFullSize = not config.toolBarIconFullSize
+        self.setupMenuLayout(config.menuLayout)
 
     # switch between landscape / portrait mode
     def switchLandscapeMode(self):
@@ -2980,50 +2713,120 @@ class MainWindow(QMainWindow):
         self.centralWidget.switchLandscapeMode()
         self.resizeCentral()
 
+    def setLandscapeMode(self, mode):
+        config.landscapeMode = bool(util.strtobool(mode))
+        self.centralWidget.switchLandscapeMode()
+        self.resizeCentral()
+
     def resizeCentral(self):
         self.centralWidget.resizeMe()
 
     # Actions - hide / show / resize study & lightning views
-    def instant(self):
-        if config.instantMode == 2:
+    def cycleInstant(self):
+        config.instantMode += 1
+        if config.instantMode == len(CentralWidget.instantRatio):
             config.instantMode = 0
-        else:
-            config.instantMode += 1
         self.resizeCentral()
 
+    def setInstantSize(self, size):
+        config.instantMode = int(size)
+        self.resizeCentral()
+
+    def pause(self):
+        self.pauseMode = True
+        while self.pauseMode:
+            QApplication.processEvents()
+
     def parallel(self):
-        if config.parallelMode == 3:
+        if config.parallelMode >= 3:
             config.parallelMode = 0
         else:
             config.parallelMode += 1
         self.resizeCentral()
 
+    def setParallelSize(self, mode):
+        config.parallelMode = int(mode)
+        self.resizeCentral()
+
     # Open Morphology Search Dialog by double clicking of Hebrew / Greek words on marvel bibles
     def openMorphDialog(self, items):
         self.morphDialog = MorphDialog(self, items)
-        #self.morphDialog.setModal(True)
+        # self.morphDialog.setModal(True)
         self.morphDialog.show()
 
-    # Set my language (config.userLanguage)
-    def openMyLanguageDialog(self):
-        languages = Languages()
-        if config.userLanguage:
-            userLanguage = config.userLanguage
-        else:
-            userLanguage = "English"
-        items = [language for language in languages.codes.keys()]
+    def openInterfaceLanguageDialog(self):
+        programInterfaceLanguage = Languages.decode(config.displayLanguage)
+        items = LanguageUtil.getNamesSupportedLanguages()
         item, ok = QInputDialog.getItem(self, "UniqueBible",
-                config.thisTranslation["menu1_setMyLanguage"], items, items.index(userLanguage), False)
+                                        config.thisTranslation["menu1_setMyLanguage"], items, items.index(programInterfaceLanguage),
+                                        False)
         if ok and item:
-            config.userLanguage = item
-            if not config.googletransSupport:
-                self.displayMessage("{0}  'googletrans'\n{1}".format(config.thisTranslation["message_missing"], config.thisTranslation["message_installFirst"]))
+            config.displayLanguage = Languages.code[item]
+            self.setTranslation()
+            self.setupMenuLayout(config.menuLayout)
+            self.reloadControlPanel(False)
+
+    def changeInterfaceLanguage(self, language):
+        config.displayLanguage = Languages.code[language]
+        self.setTranslation()
+        self.setupMenuLayout(config.menuLayout)
+        self.reloadControlPanel(False)
+
+    # Set my language (config.userLanguage)
+    # This one is different from the language of program interface
+    # userLanguage is used when user translate a selected word with right-click menu or use TRANSLATE::: command
+    # For example, a user can use English menu but he can translate a word into Chinese.
+    def openTranslationLanguageDialog(self):
+        # Use IBM Watson service to translate text
+        translator = Translator()
+        if translator.language_translator is not None:
+            if not config.userLanguage or not config.userLanguage in Translator.toLanguageNames:
+                userLanguage = "English"
+            else:
+                userLanguage = config.userLanguage
+            item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["menu1_setMyLanguage"], Translator.toLanguageNames, Translator.toLanguageNames.index(userLanguage), False)
+            if ok and item:
+                config.userLanguage = item
+        else:
+            self.displayMessage(config.thisTranslation["ibmWatsonNotEnalbed"])
+            self.openWebsite("https://github.com/eliranwong/UniqueBible/wiki/IBM-Watson-Language-Translator")
+
+    # Set verse number single-click action (config.verseNoSingleClickAction)
+    def selectSingleClickActionDialog(self):
+        values = ("_noAction", "_cp0", "_cp1", "_cp2", "_cp3", "_cp4", "COMPARE", "CROSSREFERENCE", "TSKE", "TRANSLATION", "DISCOURSE", "WORDS", "COMBO", "INDEX", "COMMENTARY", "_menu")
+        features = ["noAction", "cp0", "cp1", "cp2", "cp3", "cp4", "menu4_compareAll", "menu4_crossRef", "menu4_tske", "menu4_traslations", "menu4_discourse", "menu4_words", "menu4_tdw", "menu4_indexes", "menu4_commentary", "classicMenu"]
+        items = [config.thisTranslation[feature] for feature in features]
+        itemsDict = dict(zip(items, values))
+        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["assignSingleClick"], items, values.index(config.verseNoSingleClickAction), False)
+        if ok and item:
+            config.verseNoSingleClickAction = itemsDict[item]
+
+    # Set verse number double-click action (config.verseNoDoubleClickAction)
+    def selectDoubleClickActionDialog(self):
+        values = ("_noAction", "_cp0", "_cp1", "_cp2", "_cp3", "_cp4", "COMPARE", "CROSSREFERENCE", "TSKE", "TRANSLATION", "DISCOURSE", "WORDS", "COMBO", "INDEX", "COMMENTARY", "_menu")
+        features = ["noAction", "cp0", "cp1", "cp2", "cp3", "cp4", "menu4_compareAll", "menu4_crossRef", "menu4_tske", "menu4_traslations", "menu4_discourse", "menu4_words", "menu4_tdw", "menu4_indexes", "menu4_commentary", "classicMenu"]
+        items = [config.thisTranslation[feature] for feature in features]
+        itemsDict = dict(zip(items, values))
+        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["assignDoubleClick"], items, values.index(config.verseNoDoubleClickAction), False)
+        if ok and item:
+            config.verseNoDoubleClickAction = itemsDict[item]
+
+    # Set reference button single-click action (config.refButtonClickAction)
+    def selectRefButtonSingleClickActionDialog(self):
+        values = ("master", "mini", "direct")
+        features = ["controlPanel", "menu1_miniControl", "direct"]
+        items = [config.thisTranslation[feature] for feature in features]
+        itemsDict = dict(zip(items, values))
+        item, ok = QInputDialog.getItem(self, "UniqueBible", config.thisTranslation["refButtonAction"], items, values.index(config.refButtonClickAction), False)
+        if ok and item:
+            config.refButtonClickAction = itemsDict[item]
 
     # Set default Strongs Greek lexicon (config.defaultLexiconStrongG)
     def openSelectDefaultStrongsGreekLexiconDialog(self):
         items = LexiconData().lexiconList
         item, ok = QInputDialog.getItem(self, config.thisTranslation["menu1_selectDefaultLexicon"],
-            config.thisTranslation["menu1_setDefaultStrongsGreekLexicon"], items, items.index(config.defaultLexiconStrongG), False)
+                                        config.thisTranslation["menu1_setDefaultStrongsGreekLexicon"], items,
+                                        items.index(config.defaultLexiconStrongG), False)
         if ok and item:
             config.defaultLexiconStrongG = item
 
@@ -3031,7 +2834,8 @@ class MainWindow(QMainWindow):
     def openSelectDefaultStrongsHebrewLexiconDialog(self):
         items = LexiconData().lexiconList
         item, ok = QInputDialog.getItem(self, config.thisTranslation["menu1_selectDefaultLexicon"],
-            config.thisTranslation["menu1_setDefaultStrongsHebrewLexicon"], items, items.index(config.defaultLexiconStrongH), False)
+                                        config.thisTranslation["menu1_setDefaultStrongsHebrewLexicon"], items,
+                                        items.index(config.defaultLexiconStrongH), False)
         if ok and item:
             config.defaultLexiconStrongH = item
 
@@ -3039,7 +2843,8 @@ class MainWindow(QMainWindow):
     def openFavouriteBibleDialog(self):
         items = BiblesSqlite().getBibleList()
         item, ok = QInputDialog.getItem(self, config.thisTranslation["menu1_setMyFavouriteBible"],
-                config.thisTranslation["message_addFavouriteVersion"], items, items.index(config.favouriteBible), False)
+                                        config.thisTranslation["message_addFavouriteVersion"], items,
+                                        items.index(config.favouriteBible), False)
         if ok and item:
             config.favouriteBible = item
             config.addFavouriteToMultiRef = True
@@ -3047,11 +2852,34 @@ class MainWindow(QMainWindow):
             config.addFavouriteToMultiRef = False
         self.reloadCurrentRecord()
 
+    # Set text-to-speech default language
+    def getTtsLanguages(self):
+        return TtsLanguages().isoLang2epeakLang if config.espeak else TtsLanguages().isoLang2qlocaleLang
+
+    def setDefaultTtsLanguage(self, language):
+        config.ttsDefaultLangauge = language
+
+    def setDefaultTtsLanguageDialog(self):
+        languages = self.getTtsLanguages()
+        languageCodes = list(languages.keys())
+        items = [languages[code][1] for code in languageCodes]
+        # Check if selected tts engine has the language user specify.
+        if not (config.ttsDefaultLangauge in languageCodes):
+            config.ttsDefaultLangauge = "en"
+        # Initial index
+        initialIndex = languageCodes.index(config.ttsDefaultLangauge)
+        item, ok = QInputDialog.getItem(self, "UniqueBible",
+                                        config.thisTranslation["setDefaultTtsLanguage"], items,
+                                        initialIndex, False)
+        if ok and item:
+            config.ttsDefaultLangauge = languageCodes[items.index(item)]
+
     # Set bible book abbreviations
     def setBibleAbbreviations(self):
         items = ("ENG", "TC", "SC")
         item, ok = QInputDialog.getItem(self, "UniqueBible",
-                config.thisTranslation["menu1_setAbbreviations"], items, items.index(config.standardAbbreviation), False)
+                                        config.thisTranslation["menu1_setAbbreviations"], items,
+                                        items.index(config.standardAbbreviation), False)
         if ok and item:
             config.standardAbbreviation = item
             self.reloadCurrentRecord()
@@ -3060,7 +2888,7 @@ class MainWindow(QMainWindow):
     def setDefaultFont(self):
         ok, font = QFontDialog.getFont(QFont(config.font, config.fontSize), self)
         if ok:
-            #print(font.key())
+            # print(font.key())
             config.font, fontSize, *_ = font.key().split(",")
             config.fontSize = int(fontSize)
             self.defaultFontButton.setText("{0} {1}".format(config.font, config.fontSize))
@@ -3070,7 +2898,167 @@ class MainWindow(QMainWindow):
     def setChineseFont(self):
         ok, font = QFontDialog.getFont(QFont(config.fontChinese, config.fontSize), self)
         if ok:
-            #print(font.key())
+            # print(font.key())
             config.fontChinese, *_ = font.key().split(",")
             self.reloadCurrentRecord()
 
+    def mainPageScrollPageDown(self):
+        js = "window.scrollTo(0, window.scrollY + window.innerHeight * .95);"
+        self.mainPage.runJavaScript(js)
+
+    def mainPageScrollPageUp(self):
+        js = "window.scrollTo(0, window.scrollY - window.innerHeight * .95);"
+        self.mainPage.runJavaScript(js)
+
+    def studyPageScrollPageDown(self):
+        js = "window.scrollTo(0, window.scrollY + window.innerHeight * .95);"
+        self.studyPage.runJavaScript(js)
+
+    def studyPageScrollPageUp(self):
+        js = "window.scrollTo(0, window.scrollY - window.innerHeight * .95);"
+        self.studyPage.runJavaScript(js)
+
+    def mainPageScrollToTop(self):
+        js = "document.body.scrollTop = document.documentElement.scrollTop = 0;"
+        self.mainPage.runJavaScript(js)
+
+    def studyPageScrollToTop(self):
+        js = "document.body.scrollTop = document.documentElement.scrollTop = 0;"
+        self.studyPage.runJavaScript(js)
+
+    def setStartupMacro(self):
+        if not os.path.isdir(MacroParser.macros_dir):
+            os.mkdir(MacroParser.macros_dir)
+        files = [""]
+        for file in os.listdir(MacroParser.macros_dir):
+            if os.path.isfile(os.path.join(MacroParser.macros_dir, file)) and ".ubam" in file:
+                files.append(file.replace(".ubam", ""))
+        index = 0
+        if config.startupMacro in files:
+            index = files.index(config.startupMacro)
+        item, ok = QInputDialog.getItem(self, "UniqueBible",
+                                        config.thisTranslation["message_select_macro"], files, index, False)
+        if ok:
+            config.startupMacro = item
+
+    def macroSaveHighlights(self):
+        verses = Highlight().getHighlightedVerses()
+        if len(verses) == 0:
+            self.displayMessage("No verses are highlighted")
+        else:
+            filename, ok = self.openSaveMacroDialog(config.thisTranslation["message_macro_save_highlights"])
+            if ok:
+                file = os.path.join(MacroParser.macros_dir, filename)
+                outfile = open(file, "w")
+                parser = BibleVerseParser(config.standardAbbreviation)
+                for (b, c, v, code) in verses:
+                    reference = parser.bcvToVerseReference(b, c, v)
+                    outfile.write("_HIGHLIGHT:::{0}:::{1}\n".format(code, reference))
+                outfile.write(". displayMessage Highlighted verses loaded\n")
+                outfile.close()
+                self.displayMessage("Highlighted verses saved to {0}".format(filename))
+
+    def macroSaveCommand(self):
+        filename, ok = self.openSaveMacroDialog(config.thisTranslation["message_macro_save_command"])
+        if ok:
+            file = os.path.join(MacroParser.macros_dir, filename)
+            outfile = open(file, "w")
+            outfile.write(self.textCommandLineEdit.text() + "\n")
+            outfile.close()
+            self.displayMessage("Command saved to {0}".format(filename))
+
+    def openSaveMacroDialog(self, message):
+        filename, ok = QInputDialog.getText(self, "UniqueBible.app", message, QLineEdit.Normal, "")
+        if ok and not filename == "":
+            if not ".txt" in filename:
+                filename += ".txt"
+            file = os.path.join(MacroParser.macros_dir, filename)
+            if os.path.isfile(file):
+                reply = QMessageBox.question(self, "File exists",
+                                             "File currently exists.  Do you want to overwrite it?",
+                                             QMessageBox.Yes | QMessageBox.No)
+                if reply == QMessageBox.Yes:
+                    return filename, True
+                else:
+                    return "", False
+            else:
+                return filename, True
+        else:
+            return "", False
+
+    def loadRunMacrosMenu(self, run_macro_menu):
+        if config.enableMacros:
+            count = 1
+            macros_dir = MacroParser.macros_dir
+            if not os.path.isdir(macros_dir):
+                os.mkdir(macros_dir)
+            for file in os.listdir(macros_dir):
+                if os.path.isfile(os.path.join(macros_dir, file)) and ".ubam" in file:
+                    action = QAction(file.replace(".ubam", ""), self, triggered=partial(self.runMacro, file))
+                    if count < 10:
+                        if sc.loadRunMacro is not None and "Ctrl" in sc.loadRunMacro:
+                            action.setShortcuts([sc.loadRunMacro + ", " + str(count)])
+                        run_macro_menu.addAction(action)
+                        count += 1
+
+    def runMacro(self, file=""):
+        if config.enableMacros and len(file) > 0:
+            if not ".ubam" in file:
+                file += ".ubam"
+            MacroParser.parse(self, file)
+
+    def runPlugin(self, fileName):
+        script = os.path.join(os.getcwd(), "plugins", "menu", "{0}.py".format(fileName))
+        self.execPythonFile(script)
+
+    def execPythonFile(self, script):
+        if config.developer:
+            with open(script) as f:
+                code = compile(f.read(), script, 'exec')
+                exec(code)
+        else:
+            try:
+                with open(script) as f:
+                    code = compile(f.read(), script, 'exec')
+                    exec(code)
+            except:
+                self.displayMessage("Failed to run '{0}'!".format(os.path.basename(script)))
+
+    def showGistWindow(self):
+        gw = GistWindow()
+        if gw.exec():
+            config.gistToken = gw.gistTokenInput.text()
+        self.reloadCurrentRecord()
+
+    def showWatsonCredentialWindow(self):
+        window = WatsonCredentialWindow()
+        if window.exec():
+            config.myIBMWatsonApikey, config.myIBMWatsonUrl, config.myIBMWatsonVersion = window.inputApiKey.text(), window.inputURL.text(), window.inputVersion.text()
+
+    def addStandardTextButton(self, toolTip, action, toolbar, button=None, translation=True):
+        textButtonStyle = "QPushButton {background-color: #151B54; color: white;} QPushButton:hover {background-color: #333972;} QPushButton:pressed { background-color: #515790;}"
+        if button is None:
+            button = QPushButton()
+        button.setToolTip(config.thisTranslation[toolTip] if translation else toolTip)
+        button.setStyleSheet(textButtonStyle)
+        button.clicked.connect(action)
+        toolbar.addWidget(button)
+
+    def addStandardIconButton(self, toolTip, icon, action, toolbar, button=None, translation=True):
+        if button is None:
+            button = QPushButton()
+        if config.qtMaterial and config.qtMaterialTheme:
+            #button.setFixedSize(config.iconButtonWidth, config.iconButtonWidth)
+            button.setFixedWidth(config.iconButtonWidth)
+            #button.setFixedHeight(config.iconButtonWidth)
+        elif platform.system() == "Darwin":
+            button.setFixedWidth(40)
+        button.setToolTip(config.thisTranslation[toolTip] if translation else toolTip)
+        buttonIconFile = os.path.join("htmlResources", icon)
+        button.setIcon(QIcon(buttonIconFile))
+        button.clicked.connect(action)
+        toolbar.addWidget(button)
+
+    def testing(self):
+        #pass
+        print("testing")
